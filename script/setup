@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Bootstrap the test corpora that webidl-go depends on. The corpora are large
+# external repos and are not vendored into this project — clone them into the
+# repo root (where the tests look for them) using a shallow clone.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+clone() {
+  local url="$1" dest="$2"
+  if [[ -d "$dest" ]]; then
+    echo "skip $dest (already present)"
+    return
+  fi
+  echo "clone $url -> $dest"
+  git clone --depth 1 "$url" "$dest"
+}
+
+clone https://github.com/whatwg/webidl.git       spec
+clone https://github.com/w3c/webidl2.js.git      webidl2.js
+clone https://github.com/w3c/webref.git          webref
+
+echo "done; you can now run: go test ./webidl/..."

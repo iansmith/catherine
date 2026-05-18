@@ -1,0 +1,12 @@
+# External corpora cloned for tests; see script/setup.
+/spec/
+/webidl2.js/
+/webref/
+
+# Build artifacts
+/webidl-bin
+/cmd/webidl/webidl
+
+# Editor / OS noise
+.DS_Store
+*.swp
