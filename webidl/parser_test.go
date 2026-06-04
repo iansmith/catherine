@@ -151,7 +151,10 @@ func ruleFromBaseline(s string) string {
 // implementedRules is the set of validator rules this implementation handles.
 // Add the rule name here when landing each CATH-2 sub-ticket.
 var implementedRules = map[string]bool{
-	"no-duplicate": true,
+	"no-duplicate":       true,
+	"no-cross-overload":  true,
+	"constructor-member": true,
+	"incomplete-op":      true,
 }
 
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
