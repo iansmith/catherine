@@ -94,14 +94,31 @@ func TestInvalidCorpus(t *testing.T) {
 			bs, readErr := os.ReadFile(baselineFile)
 			if readErr == nil && isValidatorOnly(string(bs)) {
 				rule := ruleFromBaseline(string(bs))
+				if rule == "" {
+					t.Fatalf("unrecognised baseline format in %s: %s", name, strings.TrimSpace(string(bs)))
+				}
 				if !implementedRules[rule] {
 					t.Skipf("validator rule %q not yet implemented: %s", rule, strings.TrimSpace(string(bs)))
 					return
 				}
-				if errs := Validate(defs); len(errs) == 0 {
+				errs := Validate(defs)
+				if len(errs) == 0 {
 					t.Fatalf("expected validation error for rule %q, got none", rule)
 				}
+				var found bool
+				for _, e := range errs {
+					if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("no error matched rule %q (got: %v)", rule, errs)
+				}
 				return
+			}
+			if readErr != nil {
+				t.Fatalf("no baseline file for %s (%v)", name, readErr)
 			}
 			t.Fatalf("expected parse error for %s, got nil", name)
 		})

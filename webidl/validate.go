@@ -79,7 +79,7 @@ func buildMixinMap(all []Definition, unique map[string]Definition) map[string][]
 		if !ok {
 			continue
 		}
-		mixinDef, ok := unique[inc.Includes]
+		mixinDef, ok := unique[semanticName(inc.Includes)]
 		if !ok {
 			continue
 		}
@@ -87,7 +87,7 @@ func buildMixinMap(all []Definition, unique map[string]Definition) map[string][]
 		if !ok {
 			continue
 		}
-		mm[inc.Target] = append(mm[inc.Target], mixin)
+		mm[semanticName(inc.Target)] = append(mm[semanticName(inc.Target)], mixin)
 	}
 	return mm
 }
@@ -112,61 +112,43 @@ func semanticName(name string) string {
 	return name
 }
 
-// defSemanticName returns the semantic name of a Definition, or "" for Includes.
-func defSemanticName(d Definition) string {
-	switch v := d.(type) {
-	case *Interface:
-		return semanticName(v.Name)
-	case *Dictionary:
-		return semanticName(v.Name)
-	case *Enum:
-		return semanticName(v.Name)
-	case *Typedef:
-		return semanticName(v.Name)
-	case *Namespace:
-		return semanticName(v.Name)
-	case *CallbackFunction:
-		return semanticName(v.Name)
-	}
-	return ""
+// defAttrs holds the three per-Definition properties used by validation rules.
+// All three are extracted in a single type switch so that adding a new
+// Definition type to ast.go requires updating only defAttrsOf.
+type defAttrs struct {
+	name      string // semantic name (underscore-stripped); "" for Includes
+	isPartial bool
+	typeName  string // IDL keyword used in error messages
 }
 
-// defIsPartial reports whether d is a partial definition.
-func defIsPartial(d Definition) bool {
+// defAttrsOf extracts name, partial flag, and IDL keyword for d in one pass.
+func defAttrsOf(d Definition) defAttrs {
 	switch v := d.(type) {
 	case *Interface:
-		return v.Partial
-	case *Dictionary:
-		return v.Partial
-	case *Namespace:
-		return v.Partial
-	}
-	return false
-}
-
-// defTypeName returns the IDL keyword name for d, used in error messages.
-func defTypeName(d Definition) string {
-	switch v := d.(type) {
-	case *Interface:
+		keyword := "interface"
 		switch v.Variant {
 		case IfaceMixin:
-			return "interface mixin"
+			keyword = "interface mixin"
 		case IfaceCallback:
-			return "callback interface"
+			keyword = "callback interface"
 		}
-		return "interface"
+		return defAttrs{name: semanticName(v.Name), isPartial: v.Partial, typeName: keyword}
 	case *Dictionary:
-		return "dictionary"
+		return defAttrs{name: semanticName(v.Name), isPartial: v.Partial, typeName: "dictionary"}
 	case *Enum:
-		return "enum"
+		return defAttrs{name: semanticName(v.Name), typeName: "enum"}
 	case *Typedef:
-		return "typedef"
+		return defAttrs{name: semanticName(v.Name), typeName: "typedef"}
 	case *Namespace:
-		return "namespace"
+		return defAttrs{name: semanticName(v.Name), isPartial: v.Partial, typeName: "namespace"}
 	case *CallbackFunction:
-		return "callback"
+		return defAttrs{name: semanticName(v.Name), typeName: "callback"}
 	case *Includes:
-		return "includes"
+		return defAttrs{typeName: "includes"}
 	}
-	return "unknown"
+	return defAttrs{typeName: "unknown"}
 }
+
+func defSemanticName(d Definition) string { return defAttrsOf(d).name }
+func defIsPartial(d Definition) bool      { return defAttrsOf(d).isPartial }
+func defTypeName(d Definition) string     { return defAttrsOf(d).typeName }
