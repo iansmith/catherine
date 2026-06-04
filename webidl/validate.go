@@ -21,10 +21,134 @@ type Definitions struct {
 	MixinMap   map[string][]*Interface // target name → included mixin interfaces
 }
 
-// definitionValidator is implemented by AST nodes that validate themselves.
-// CATH-6, CATH-7, CATH-8, CATH-9 add validate methods to the relevant types.
+// definitionValidator is implemented by top-level AST nodes that validate themselves.
 type definitionValidator interface {
 	validate(defs *Definitions) []error
+}
+
+// memberValidator is implemented by interface/namespace members that have per-member rules.
+type memberValidator interface {
+	validateMember(defs *Definitions) []error
+}
+
+// validateMember implements the incomplete-op rule:
+// regular and static operations must have both a return type and an identifier.
+func (op *Operation) validateMember(_ *Definitions) []error {
+	if op.Name == "" && (op.Special == "" || op.Special == "static") {
+		return []error{&ValidationError{
+			Rule:    "incomplete-op",
+			Message: "Regular or static operations must have both a return type and an identifier.",
+		}}
+	}
+	return nil
+}
+
+// validate implements constructor-member and no-cross-overload rules for interfaces.
+func (iface *Interface) validate(defs *Definitions) []error {
+	var errs []error
+
+	// Walk members for per-member rules (e.g. incomplete-op on operations).
+	for _, m := range iface.Members {
+		if v, ok := m.(memberValidator); ok {
+			errs = append(errs, v.validateMember(defs)...)
+		}
+	}
+
+	// constructor-member: [Constructor] extended attribute is the legacy form.
+	for _, ea := range iface.ExtAttrs {
+		if ea.Name == "Constructor" {
+			errs = append(errs, &ValidationError{
+				Rule: "constructor-member",
+				Message: "Constructors should now be represented as a `constructor()` operation " +
+					"on the interface instead of `[Constructor]` extended attribute.",
+			})
+		}
+	}
+
+	// no-cross-overload: only applies to the canonical (non-partial) interface.
+	if !iface.Partial {
+		errs = append(errs, checkCrossOverload(defs, iface)...)
+	}
+
+	return errs
+}
+
+// checkCrossOverload detects operations re-defined across partials or included mixins.
+// Operations may be overloaded within the same scope, but not across scopes.
+func checkCrossOverload(defs *Definitions, iface *Interface) []error {
+	statics := make(map[string]bool)
+	nonstatics := make(map[string]bool)
+
+	for _, m := range iface.Members {
+		op, ok := m.(*Operation)
+		if !ok || op.Name == "" {
+			continue
+		}
+		if op.Special == "static" {
+			statics[op.Name] = true
+		} else {
+			nonstatics[op.Name] = true
+		}
+	}
+
+	name := semanticName(iface.Name)
+	var errs []error
+
+	var extensions [][]Member
+	for _, p := range defs.Partials[name] {
+		if pi, ok := p.(*Interface); ok {
+			extensions = append(extensions, pi.Members)
+		}
+	}
+	for _, mixin := range defs.MixinMap[name] {
+		extensions = append(extensions, mixin.Members)
+	}
+
+	for _, members := range extensions {
+		var extStatics, extNonstatics []*Operation
+		for _, m := range members {
+			op, ok := m.(*Operation)
+			if !ok {
+				continue
+			}
+			if op.Special == "static" {
+				extStatics = append(extStatics, op)
+			} else {
+				extNonstatics = append(extNonstatics, op)
+			}
+		}
+
+		for _, op := range extStatics {
+			if op.Name != "" && statics[op.Name] {
+				errs = append(errs, &ValidationError{
+					Rule:    "no-cross-overload",
+					Message: fmt.Sprintf("The static operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+				})
+			}
+		}
+		for _, op := range extNonstatics {
+			if op.Name != "" && nonstatics[op.Name] {
+				errs = append(errs, &ValidationError{
+					Rule:    "no-cross-overload",
+					Message: fmt.Sprintf("The operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+				})
+			}
+		}
+
+		// Accumulate names so subsequent extensions see earlier ones.
+		for _, op := range extStatics {
+			if op.Name != "" {
+				statics[op.Name] = true
+			}
+		}
+		for _, op := range extNonstatics {
+			if op.Name != "" {
+				nonstatics[op.Name] = true
+			}
+		}
+	}
+
+	return errs
 }
 
 // Validate runs semantic validation over a parsed AST and returns all errors found.

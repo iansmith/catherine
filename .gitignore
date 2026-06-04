@@ -7,6 +7,9 @@
 /webidl-bin
 /cmd/webidl/webidl
 
+# Local-only design notes; not part of the published project.
+/docs/
+
 # Editor / OS noise
 .DS_Store
 *.swp
