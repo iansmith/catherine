@@ -158,6 +158,9 @@ var implementedRules = map[string]bool{
 	"attr-invalid-type":        true, // CATH-7
 	"no-nullable-union-dict":   true, // CATH-7
 	"async-sequence-idl-to-js": true, // CATH-7
+	"dict-arg-default":         true, // CATH-8
+	"dict-arg-optional":        true, // CATH-8
+	"no-nullable-dict-arg":     true, // CATH-8
 }
 
 // TestValidateAsyncSequenceIdlToJs tests that async_sequence types cannot be
@@ -265,6 +268,159 @@ interface I {
 			}
 		})
 	}
+}
+
+// TestValidateDictArgRules covers the three dictionary-argument constraint rules
+// (CATH-8): dict-arg-default, dict-arg-optional, no-nullable-dict-arg.
+func TestValidateDictArgRules(t *testing.T) {
+	t.Parallel()
+
+	mustFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				return
+			}
+		}
+		t.Errorf("expected a ValidationError with rule %q; got: %v", rule, errs)
+	}
+
+	mustNotFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				t.Errorf("unexpected ValidationError with rule %q; got: %v", rule, errs)
+				return
+			}
+		}
+	}
+
+	// dict-arg-default: optional argument whose type includes a dictionary must
+	// have a default of {}.  An optional dict arg with no default fires.
+	t.Run("dict-arg-default/missing default fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "dict-arg-default", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(optional D d);
+};`)
+	})
+	t.Run("dict-arg-default/empty-brace default OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "dict-arg-default", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(optional D d = {});
+};`)
+	})
+	t.Run("dict-arg-default/union missing default fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "dict-arg-default", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(optional (boolean or D) u);
+};`)
+	})
+
+	// dict-arg-optional: non-optional argument whose type includes a dictionary
+	// with no required fields must be optional.
+	t.Run("dict-arg-optional/non-optional fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "dict-arg-optional", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(D d);
+};`)
+	})
+	t.Run("dict-arg-optional/required-field dict exempt", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "dict-arg-optional", `
+dictionary D { required long x; };
+[Exposed=Window]
+interface I {
+  undefined op(D d);
+};`)
+	})
+	t.Run("dict-arg-optional/subsequent required arg exempts", func(t *testing.T) {
+		t.Parallel()
+		// op9 pattern: Optional notLast, DOMString yay — should NOT fire because
+		// DOMString yay is a required arg that comes after.
+		mustNotFire(t, "dict-arg-optional", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(D d, DOMString s);
+};`)
+	})
+
+	// no-nullable-dict-arg: argument whose type is a nullable dictionary fires.
+	// Regression: nullable typedef aliases (TD? where TD→Dict) must fire
+	// no-nullable-dict-arg but must NOT also fire dict-arg-optional. The two
+	// rules should never co-fire — the early-return in validateArgDictRules
+	// ensures this (see CATH-8 code review finding).
+	t.Run("no-nullable-dict-arg/nullable typedef alias fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "no-nullable-dict-arg", `
+typedef D TD;
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(TD? d);
+};`)
+	})
+	t.Run("dict-arg-optional/nullable typedef alias exempt", func(t *testing.T) {
+		t.Parallel()
+		// dict-arg-optional must NOT fire alongside no-nullable-dict-arg.
+		mustNotFire(t, "dict-arg-optional", `
+typedef D TD;
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(TD? d);
+};`)
+	})
+	t.Run("no-nullable-dict-arg/nullable dict fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "no-nullable-dict-arg", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(optional D? d = {});
+};`)
+	})
+	t.Run("no-nullable-dict-arg/non-nullable dict OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "no-nullable-dict-arg", `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(optional D d = {});
+};`)
+	})
+	t.Run("no-nullable-dict-arg/required nullable dict fires", func(t *testing.T) {
+		t.Parallel()
+		// Nullable can fire even on non-optional required arg.
+		mustFire(t, "no-nullable-dict-arg", `
+dictionary D { required long x; };
+[Exposed=Window]
+interface I {
+  undefined op(D? d);
+};`)
+	})
 }
 
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
