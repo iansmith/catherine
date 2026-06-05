@@ -423,6 +423,197 @@ interface I {
 	})
 }
 
+// TestValidateExtAttrRules covers the six extended-attribute and deprecation
+// rules introduced by CATH-9: require-exposed, no-constructible-global,
+// renamed-legacy, migrate-allowshared, replace-void, and
+// obsolete-async-iterable-syntax.
+func TestValidateExtAttrRules(t *testing.T) {
+	t.Parallel()
+
+	mustFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				return
+			}
+		}
+		t.Errorf("expected a ValidationError with rule %q; got: %v", rule, errs)
+	}
+
+	mustNotFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				t.Errorf("unexpected ValidationError with rule %q; got: %v", rule, errs)
+				return
+			}
+		}
+	}
+
+	// ── require-exposed ────────────────────────────────────────────────────
+	// Rule: every non-partial interface and namespace must carry [Exposed].
+
+	t.Run("require-exposed/interface without Exposed fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "require-exposed", `
+interface Unexposed {};`)
+	})
+	t.Run("require-exposed/interface with Exposed OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "require-exposed", `
+[Exposed=Window]
+interface Exposed {};`)
+	})
+	t.Run("require-exposed/namespace without Exposed fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "require-exposed", `
+namespace UnexposedNS {};`)
+	})
+	t.Run("require-exposed/namespace with Exposed OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "require-exposed", `
+[Exposed=Window]
+namespace ExposedNS {};`)
+	})
+	t.Run("require-exposed/partial interface exempt", func(t *testing.T) {
+		t.Parallel()
+		// The partial declaration itself must not fire; only the canonical one does.
+		mustNotFire(t, "require-exposed", `
+[Exposed=Window]
+interface Base {};
+partial interface Base { undefined op(); };`)
+	})
+
+	// ── no-constructible-global ────────────────────────────────────────────
+	// Rule: [Global] interfaces cannot have constructor() or LegacyFactoryFunction.
+
+	t.Run("no-constructible-global/Global interface with constructor fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "no-constructible-global", `
+[Global, Exposed=Window]
+interface G {
+  constructor();
+};`)
+	})
+	t.Run("no-constructible-global/Global interface with LegacyFactoryFunction fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "no-constructible-global", `
+[Global, Exposed=Window, LegacyFactoryFunction=G()]
+interface G {};`)
+	})
+	t.Run("no-constructible-global/non-Global interface with constructor OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "no-constructible-global", `
+[Exposed=Window]
+interface NotGlobal {
+  constructor();
+};`)
+	})
+
+	// ── renamed-legacy ─────────────────────────────────────────────────────
+	// Rule: deprecated extended-attribute names must be replaced with their
+	// [Legacy…] equivalents.
+
+	t.Run("renamed-legacy/NoInterfaceObject fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "renamed-legacy", `
+[Exposed=Window, NoInterfaceObject]
+interface I {};`)
+	})
+	t.Run("renamed-legacy/LegacyNoInterfaceObject OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "renamed-legacy", `
+[Exposed=Window, LegacyNoInterfaceObject]
+interface I {};`)
+	})
+	t.Run("renamed-legacy/Unforgeable member fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "renamed-legacy", `
+[Exposed=Window]
+interface I {
+  [Unforgeable] readonly attribute DOMString x;
+};`)
+	})
+	t.Run("renamed-legacy/LegacyUnforgeable member OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "renamed-legacy", `
+[Exposed=Window]
+interface I {
+  [LegacyUnforgeable] readonly attribute DOMString x;
+};`)
+	})
+
+	// ── migrate-allowshared ────────────────────────────────────────────────
+	// Rule: [AllowShared] BufferSource → AllowSharedBufferSource.
+
+	t.Run("migrate-allowshared/AllowShared BufferSource fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "migrate-allowshared", `
+[Exposed=Window]
+interface I {
+  undefined foo([AllowShared] BufferSource source);
+};`)
+	})
+	t.Run("migrate-allowshared/AllowSharedBufferSource OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "migrate-allowshared", `
+[Exposed=Window]
+interface I {
+  undefined foo(AllowSharedBufferSource source);
+};`)
+	})
+
+	// ── replace-void ───────────────────────────────────────────────────────
+	// Rule: void return type → undefined.
+
+	t.Run("replace-void/void return fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "replace-void", `
+[Exposed=Window]
+interface I {
+  void foo();
+};`)
+	})
+	t.Run("replace-void/undefined return OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "replace-void", `
+[Exposed=Window]
+interface I {
+  undefined foo();
+};`)
+	})
+
+	// ── obsolete-async-iterable-syntax ─────────────────────────────────────
+	// Rule: `async iterable` (space) → `async_iterable` (underscore).
+
+	t.Run("obsolete-async-iterable-syntax/async iterable fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "obsolete-async-iterable-syntax", `
+[Exposed=Window]
+interface I {
+  async iterable<long>;
+};`)
+	})
+	t.Run("obsolete-async-iterable-syntax/async_iterable OK", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, "obsolete-async-iterable-syntax", `
+[Exposed=Window]
+interface I {
+  async_iterable<long>;
+};`)
+	})
+}
+
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
 func stripEOF(v any) any {
 	arr, ok := v.([]any)
