@@ -223,52 +223,68 @@ func (cb *CallbackFunction) validate(defs *Definitions) []error {
 // Type-level helpers
 // ---------------------------------------------------------------------------
 
-// idlTypeIncludesDictionary returns the first IDLType reference in the type
-// tree that resolves to a dictionary, or nil if none is found. It follows
-// typedef chains (with a cycle guard) and walks union subtypes. Nullable
-// bare-dictionary references (Dict?) are NOT counted — only non-nullable ones.
-func idlTypeIncludesDictionary(idlType *IDLType, defs *Definitions) *IDLType {
-	return idlTypeIncludesDictionaryRec(idlType, defs, make(map[string]bool))
-}
-
-func idlTypeIncludesDictionaryRec(idlType *IDLType, defs *Definitions, visited map[string]bool) *IDLType {
-	if !idlType.Union {
-		name := semanticName(idlType.Base)
+// idlTypeWalkDicts is the shared traversal kernel used by
+// idlTypeIncludesDictionary and dictionaryFromIDLTypeHasRequiredField. It walks
+// t following typedef chains (with a visited cycle guard) and union/generic
+// subtypes. The nullable check fires at the *Dictionary leaf, so typedef aliases
+// that are themselves nullable (e.g. TD?) are still traversed.
+//
+// For each non-nullable *Dictionary leaf found, f is called with the dictionary
+// name. The walk halts and returns true the first time f returns true.
+//
+// When a named type is not found in defs, returnOnUnknown is returned (false for
+// presence-only queries, true for conservative required-field queries).
+func idlTypeWalkDicts(t *IDLType, defs *Definitions, visited map[string]bool, returnOnUnknown bool, f func(name string) bool) bool {
+	if !t.Union {
+		name := semanticName(t.Base)
 		if name != "" {
-			if def, ok := defs.Unique[name]; ok {
+			def, ok := defs.Unique[name]
+			if ok {
 				switch d := def.(type) {
 				case *Typedef:
 					// Cycle guard: if we've already started evaluating this typedef,
-					// treat the result as indeterminate (nil) to break the cycle.
+					// treat the result as indeterminate to break the cycle.
 					if !visited[name] {
 						visited[name] = true
-						if r := idlTypeIncludesDictionaryRec(d.IDLType, defs, visited); r != nil {
-							return idlType // the reference is the current type
+						if idlTypeWalkDicts(d.IDLType, defs, visited, returnOnUnknown, f) {
+							return true
 						}
 					}
 				case *Dictionary:
-					// Only a non-nullable reference counts as "includes dictionary".
-					// Dict? is the nullable type whose inner type is a dictionary —
-					// not itself a dictionary for the purposes of this check.
-					if !idlType.Nullable {
-						return idlType
+					// Only non-nullable references count — Dict? is excluded.
+					if !t.Nullable {
+						return f(name)
 					}
 				}
+			} else if returnOnUnknown {
+				// Unknown name in conservative mode (required-field queries).
+				return true
 			}
+			// Unknown name + returnOnUnknown=false: fall through to subtype walk so
+			// generics like UnknownContainer<Dict> are still covered.
 		}
 	}
-	// Walk subtypes (for unions and generics).
-	for _, sub := range idlType.Subtypes {
-		if r := idlTypeIncludesDictionaryRec(sub, defs, visited); r != nil {
-			// For a union subtype, propagate the inner reference directly.
-			// For a non-union subtype, the subtype itself is the reference.
-			if sub.Union {
-				return r
-			}
-			return sub
+	// Walk subtypes (union members and generic type parameters).
+	for _, sub := range t.Subtypes {
+		if idlTypeWalkDicts(sub, defs, visited, returnOnUnknown, f) {
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// idlTypeIncludesDictionary returns the first IDLType reference in the type
+// tree that resolves to a non-nullable dictionary, or nil if none is found. It
+// follows typedef chains (with a cycle guard) and walks union subtypes and
+// generic parameters. Nullable bare-dictionary references (Dict?) are NOT
+// counted — only non-nullable ones.
+func idlTypeIncludesDictionary(idlType *IDLType, defs *Definitions) *IDLType {
+	var found *IDLType
+	idlTypeWalkDicts(idlType, defs, make(map[string]bool), false, func(_ string) bool {
+		found = idlType
+		return true // stop on first dict found
+	})
+	return found
 }
 
 // hasExtAttr reports whether any entry in attrs has the given name.
@@ -333,43 +349,15 @@ func idlTypeNullableInnerIncludesDictionary(t *IDLType, defs *Definitions) bool 
 }
 
 // dictionaryFromIDLTypeHasRequiredField returns true when any dictionary reached
-// through t (following typedefs and union members, skipping nullable references)
-// has at least one required field in itself or in an ancestor dictionary.
-// Returns true (conservative) when a parent type in the chain is not defined in
-// defs — this prevents false-positive dict-arg-optional warnings on types with
-// unknown supertypes.
+// through t has at least one required field in itself or in an ancestor
+// dictionary. Returns true (conservative) when a type in the chain is unknown —
+// this prevents false-positive dict-arg-optional warnings on types whose full
+// definition is not available in defs.
 func dictionaryFromIDLTypeHasRequiredField(t *IDLType, defs *Definitions) bool {
-	return dictFromTypeHasReqRec(t, defs, make(map[string]bool))
-}
-
-func dictFromTypeHasReqRec(t *IDLType, defs *Definitions, visited map[string]bool) bool {
-	if !t.Union {
-		if t.Nullable {
-			return false // nullable refs are excluded (same rule as idlTypeIncludesDictionary)
-		}
-		name := semanticName(t.Base)
-		if name == "" || visited[name] {
-			return false
-		}
-		visited[name] = true
-		def, ok := defs.Unique[name]
-		if !ok {
-			return true // unknown type — treat conservatively as having required fields
-		}
-		switch d := def.(type) {
-		case *Dictionary:
+	return idlTypeWalkDicts(t, defs, make(map[string]bool), true,
+		func(name string) bool {
 			return dictHasRequiredFieldRec(name, defs, make(map[string]bool))
-		case *Typedef:
-			return dictFromTypeHasReqRec(d.IDLType, defs, visited)
-		}
-		return false
-	}
-	for _, sub := range t.Subtypes {
-		if dictFromTypeHasReqRec(sub, defs, visited) {
-			return true
-		}
-	}
-	return false
+		})
 }
 
 // dictHasRequiredFieldRec walks d's field list and inheritance chain for a required
@@ -417,25 +405,30 @@ func isLastRequiredArgument(idx int, args []*Argument, defs *Definitions) bool {
 // single argument. idx is the argument's 0-based position in allArgs (needed for
 // the isLastRequiredArgument check). Rules fire in the order specified by the JS
 // reference implementation: no-nullable-dict-arg → dict-arg-default / dict-arg-optional.
+//
+// If no-nullable-dict-arg fires the function returns immediately. The corpus
+// baseline confirms that dict-arg-default and dict-arg-optional never co-fire
+// with it, and the early exit also prevents a false-positive dict-arg-optional
+// on nullable typedef aliases (e.g. TD? where TD resolves to a dictionary) —
+// idlTypeIncludesDictionary follows the typedef chain through the nullable,
+// but the arg is already flagged invalid by no-nullable-dict-arg.
 func validateArgDictRules(arg *Argument, idx int, allArgs []*Argument, defs *Definitions) []error {
-	var errs []error
-
 	// no-nullable-dict-arg: nullable type whose inner type includes a dictionary.
 	if idlTypeNullableInnerIncludesDictionary(arg.IDLType, defs) {
-		errs = append(errs, &ValidationError{
+		return []error{&ValidationError{
 			Rule:    "no-nullable-dict-arg",
 			Message: "Dictionary arguments cannot be nullable.",
-		})
+		}}
 	}
 
 	if idlTypeIncludesDictionary(arg.IDLType, defs) != nil {
 		if arg.Optional {
 			// dict-arg-default: optional dict argument must default to {}.
 			if arg.Default == nil || arg.Default.Kind != CVDictionary {
-				errs = append(errs, &ValidationError{
+				return []error{&ValidationError{
 					Rule:    "dict-arg-default",
 					Message: "Optional dictionary arguments must have a default value of `{}`.",
-				})
+				}}
 			}
 		} else {
 			// dict-arg-optional: non-optional dict arg with no required fields must
@@ -443,15 +436,15 @@ func validateArgDictRules(arg *Argument, idx int, allArgs []*Argument, defs *Def
 			// effectively required anyway).
 			if !dictionaryFromIDLTypeHasRequiredField(arg.IDLType, defs) &&
 				isLastRequiredArgument(idx, allArgs, defs) {
-				errs = append(errs, &ValidationError{
+				return []error{&ValidationError{
 					Rule:    "dict-arg-optional",
 					Message: "Dictionary argument must be optional if it has no required fields",
-				})
+				}}
 			}
 		}
 	}
 
-	return errs
+	return nil
 }
 
 // validateNullableUnionDict mirrors the no-nullable-union-dict logic in

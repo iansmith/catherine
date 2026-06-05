@@ -368,6 +368,31 @@ interface I {
 	})
 
 	// no-nullable-dict-arg: argument whose type is a nullable dictionary fires.
+	// Regression: nullable typedef aliases (TD? where TD→Dict) must fire
+	// no-nullable-dict-arg but must NOT also fire dict-arg-optional. The two
+	// rules should never co-fire — the early-return in validateArgDictRules
+	// ensures this (see CATH-8 code review finding).
+	t.Run("no-nullable-dict-arg/nullable typedef alias fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, "no-nullable-dict-arg", `
+typedef D TD;
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(TD? d);
+};`)
+	})
+	t.Run("dict-arg-optional/nullable typedef alias exempt", func(t *testing.T) {
+		t.Parallel()
+		// dict-arg-optional must NOT fire alongside no-nullable-dict-arg.
+		mustNotFire(t, "dict-arg-optional", `
+typedef D TD;
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined op(TD? d);
+};`)
+	})
 	t.Run("no-nullable-dict-arg/nullable dict fires", func(t *testing.T) {
 		t.Parallel()
 		mustFire(t, "no-nullable-dict-arg", `
