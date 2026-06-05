@@ -85,19 +85,42 @@ func TestInvalidCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Parse(string(src)); err == nil {
-				// Some "invalid" corpus entries are only invalid per validator
-				// rules (semantics), not the grammar. We don't implement the
-				// validator. Skip those by checking whether the baseline error
-				// text suggests a validator-only issue.
-				baselineFile := filepath.Join(invalidBaselineDir, strings.TrimSuffix(name, ".webidl")+".txt")
-				bs, readErr := os.ReadFile(baselineFile)
-				if readErr == nil && isValidatorOnly(string(bs)) {
-					t.Skipf("validator-only check: %s", strings.TrimSpace(string(bs)))
+			defs, parseErr := Parse(string(src))
+			if parseErr != nil {
+				return // grammar-level error: pass
+			}
+			// Parse succeeded: check whether this is a validator-only case.
+			baselineFile := filepath.Join(invalidBaselineDir, strings.TrimSuffix(name, ".webidl")+".txt")
+			bs, readErr := os.ReadFile(baselineFile)
+			if readErr == nil && isValidatorOnly(string(bs)) {
+				rule := ruleFromBaseline(string(bs))
+				if rule == "" {
+					t.Fatalf("unrecognised baseline format in %s: %s", name, strings.TrimSpace(string(bs)))
+				}
+				if !implementedRules[rule] {
+					t.Skipf("validator rule %q not yet implemented: %s", rule, strings.TrimSpace(string(bs)))
 					return
 				}
-				t.Fatalf("expected parse error, got nil")
+				errs := Validate(defs)
+				if len(errs) == 0 {
+					t.Fatalf("expected validation error for rule %q, got none", rule)
+				}
+				var found bool
+				for _, e := range errs {
+					if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("no error matched rule %q (got: %v)", rule, errs)
+				}
+				return
 			}
+			if readErr != nil {
+				t.Fatalf("no baseline file for %s (%v)", name, readErr)
+			}
+			t.Fatalf("expected parse error for %s, got nil", name)
 		})
 	}
 }
@@ -109,6 +132,26 @@ func TestInvalidCorpus(t *testing.T) {
 // messages with `Validation error`. Parse errors use other phrasing.
 func isValidatorOnly(s string) bool {
 	return strings.Contains(s, "Validation error")
+}
+
+// ruleFromBaseline extracts the rule name from the first line of a validation
+// baseline. The format is "(rule-name) Validation error ...".
+func ruleFromBaseline(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '(' {
+		return ""
+	}
+	end := strings.IndexByte(s, ')')
+	if end < 0 {
+		return ""
+	}
+	return s[1:end]
+}
+
+// implementedRules is the set of validator rules this implementation handles.
+// Add the rule name here when landing each CATH-2 sub-ticket.
+var implementedRules = map[string]bool{
+	"no-duplicate": true,
 }
 
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
