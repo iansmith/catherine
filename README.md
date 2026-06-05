@@ -10,7 +10,7 @@ against the reference test baselines.
 ## Status
 
 - **68 / 68** webidl2.js syntax-corpus tests pass (AST structurally matches the baseline).
-- **84** invalid-corpus tests reject as expected; **18** are validator-only checks (e.g. missing `[Exposed]`, duplicate member names) which are out of scope for the parser and skipped.
+- **102 / 102** invalid-corpus tests pass (0 skipped). Validator-only checks — `[Exposed]` required, duplicate members, nullable union-of-dict, deprecated extended attributes, and more — are covered by the semantic validator.
 - **332 / 334** webref shipping-spec IDL files parse cleanly. The two failures (`DOM-Style.idl`, `svg-paths.idl`) are also rejected by webidl2.js with the same errors — they predate modern Web IDL syntax.
 
 ## Use
@@ -58,14 +58,44 @@ The cloned corpora are gitignored — they're large and not part of this project
 
 ## Scope
 
-This is a **parser only**. The reference implementation has a second pass
-that runs semantic validation (require `[Exposed]`, no duplicate member names,
-no nullable union of dictionaries, etc.) — none of that is implemented here.
-If you need a validator, build it on top of the AST.
+### Parser
 
-We also do not preserve source trivia (whitespace, comments). The parser
-emits an abstract AST, not a concrete syntax tree; you cannot round-trip IDL
+Hand-written recursive descent covering the full Web IDL grammar (§13 of the
+spec). Source trivia (whitespace, comments) is not preserved — the output is
+an abstract AST, not a concrete syntax tree; you cannot round-trip IDL
 byte-for-byte through it.
+
+### Semantic validator
+
+A second pass runs semantic validation on the parsed AST:
+
+```go
+errs := webidl.Validate(defs)
+for _, e := range errs {
+    fmt.Println(e)
+}
+```
+
+Implemented rules:
+
+| Rule | What it checks |
+|---|---|
+| `no-duplicate` | No duplicate member names within an interface |
+| `no-cross-overload` | Operation overloads must not mix regular and static |
+| `constructor-member` | Constructor members only on interfaces with `[Constructor]` |
+| `incomplete-op` | Operations must declare a return type |
+| `attr-invalid-type` | Attributes may not use `sequence<>`, `record<>`, or `any` |
+| `no-nullable-union-dict` | A nullable union type must not include a dictionary member |
+| `async-sequence-idl-to-js` | `async_sequence<T>` is not a valid IDL-to-JS return/argument type |
+| `dict-arg-default` | Dictionary-typed arguments must carry a default value |
+| `dict-arg-optional` | Dictionary-typed arguments must be marked `optional` |
+| `no-nullable-dict-arg` | Dictionary-typed arguments must not be nullable |
+| `require-exposed` | Non-partial interfaces and namespaces must carry `[Exposed]` |
+| `no-constructible-global` | `[Global]` interfaces may not declare constructors or `[LegacyFactoryFunction]` |
+| `renamed-legacy` | Flags renamed extended attributes (e.g. `TreatUndefinedAs` → `LegacyTreatUndefinedAs`) |
+| `migrate-allowshared` | `[AllowShared] BufferSource` → `AllowSharedBufferSource` |
+| `replace-void` | `void` return type → `undefined` |
+| `obsolete-async-iterable-syntax` | Async iterable must not use the legacy space-separated form |
 
 ## Design notes
 
