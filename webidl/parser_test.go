@@ -205,6 +205,68 @@ interface I {
 	}
 }
 
+// TestValidateNullableUnionDictGaps covers three spec-compliance gaps found in
+// code review of CATH-7: multi-hop typedef resolution, async-iterable argument
+// types, and constructor argument types.
+func TestValidateNullableUnionDictGaps(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			// Finding 1: validateNullableUnionDict only follows one typedef hop.
+			// A two-hop chain (V → U → union) must still fire no-nullable-union-dict.
+			name: "multi-hop typedef chain",
+			src: `dictionary Dict { long x; };
+typedef (boolean or Dict) U;
+typedef U V;
+typedef V? ChainedNullable;`,
+		},
+		{
+			// Finding 2: IterableLike.Arguments never checked.
+			// An async iterable whose argument has a nullable union containing a
+			// dictionary must fire no-nullable-union-dict.
+			name: "async iterable argument",
+			src: `dictionary Dict { long x; };
+[Exposed=Window]
+interface I {
+  async iterable<long>(optional (Dict or boolean)? bufferSize);
+};`,
+		},
+		{
+			// Finding 3: *Constructor has no validateMember, so constructor
+			// argument types are never validated.
+			name: "constructor argument",
+			src: `dictionary Dict { long x; };
+[Exposed=Window]
+interface I {
+  constructor((Dict or boolean)? arg);
+};`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defs, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			errs := Validate(defs)
+			var found bool
+			for _, e := range errs {
+				if ve, ok := e.(*ValidationError); ok && ve.Rule == "no-nullable-union-dict" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected a ValidationError with rule %q; got: %v", "no-nullable-union-dict", errs)
+			}
+		})
+	}
+}
+
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
 func stripEOF(v any) any {
 	arr, ok := v.([]any)
