@@ -67,12 +67,8 @@ func (iface *Interface) validate(defs *Definitions) []error {
 		if v, ok := m.(memberValidator); ok {
 			errs = append(errs, v.validateMember(defs)...)
 		}
-		if op, ok := m.(*Operation); ok && op.Name != "" {
-			if op.Special == "static" {
-				statics[op.Name] = true
-			} else {
-				nonstatics[op.Name] = true
-			}
+		if op, ok := m.(*Operation); ok {
+			seedOp(op, statics, nonstatics)
 		}
 	}
 
@@ -92,12 +88,26 @@ func (iface *Interface) validate(defs *Definitions) []error {
 		}
 	}
 
-	// no-cross-overload: only applies to the canonical (non-partial) interface.
-	if !iface.Partial {
+	// no-cross-overload: only applies to the canonical (non-partial) regular interface.
+	// Mixin and callback interfaces have no equivalent rule in webidl2.js.
+	if !iface.Partial && iface.Variant == IfaceRegular {
 		errs = append(errs, checkCrossOverload(defs, iface, statics, nonstatics)...)
 	}
 
 	return errs
+}
+
+// seedOp records op.Name in statics (for static operations) or nonstatics (for all
+// others). Unnamed operations (getters, setters, …) are silently skipped.
+func seedOp(op *Operation, statics, nonstatics map[string]bool) {
+	if op.Name == "" {
+		return
+	}
+	if op.Special == "static" {
+		statics[op.Name] = true
+	} else {
+		nonstatics[op.Name] = true
+	}
 }
 
 // checkCrossOverload detects operations re-defined across partials or included mixins.
@@ -108,17 +118,7 @@ func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics
 	name := semanticName(iface.Name)
 	var errs []error
 
-	var extensions [][]Member
-	for _, p := range defs.Partials[name] {
-		if pi, ok := p.(*Interface); ok {
-			extensions = append(extensions, pi.Members)
-		}
-	}
-	for _, mixin := range defs.MixinMap[name] {
-		extensions = append(extensions, mixin.Members)
-	}
-
-	for _, members := range extensions {
+	checkExtension := func(members []Member) {
 		// Pass 1: check each operation against base + already-accumulated names.
 		for _, m := range members {
 			op, ok := m.(*Operation)
@@ -143,16 +143,19 @@ func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics
 		}
 		// Pass 2: accumulate names so subsequent extensions see earlier ones.
 		for _, m := range members {
-			op, ok := m.(*Operation)
-			if !ok || op.Name == "" {
-				continue
-			}
-			if op.Special == "static" {
-				statics[op.Name] = true
-			} else {
-				nonstatics[op.Name] = true
+			if op, ok := m.(*Operation); ok {
+				seedOp(op, statics, nonstatics)
 			}
 		}
+	}
+
+	for _, p := range defs.Partials[name] {
+		if pi, ok := p.(*Interface); ok {
+			checkExtension(pi.Members)
+		}
+	}
+	for _, mixin := range defs.MixinMap[name] {
+		checkExtension(mixin.Members)
 	}
 
 	return errs
