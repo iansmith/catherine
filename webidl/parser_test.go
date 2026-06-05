@@ -151,10 +151,120 @@ func ruleFromBaseline(s string) string {
 // implementedRules is the set of validator rules this implementation handles.
 // Add the rule name here when landing each CATH-2 sub-ticket.
 var implementedRules = map[string]bool{
-	"no-duplicate":       true,
-	"no-cross-overload":  true,
-	"constructor-member": true,
-	"incomplete-op":      true,
+	"no-duplicate":             true,
+	"no-cross-overload":        true,
+	"constructor-member":       true,
+	"incomplete-op":            true,
+	"attr-invalid-type":        true, // CATH-7
+	"no-nullable-union-dict":   true, // CATH-7
+	"async-sequence-idl-to-js": true, // CATH-7
+}
+
+// TestValidateAsyncSequenceIdlToJs tests that async_sequence types cannot be
+// used as operation return types or as callback arguments (the
+// async-sequence-idl-to-js rule). These cases are not covered by the corpus
+// test because async-sequence-idl-to-js.webidl's baseline starts with
+// attr-invalid-type as the first rule.
+func TestValidateAsyncSequenceIdlToJs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "operation return type",
+			src: `[Exposed=Window]
+interface I {
+  async_sequence<DOMString> foo();
+};`,
+		},
+		{
+			name: "callback argument",
+			src:  `callback CB = boolean (async_sequence<DOMString> arg);`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defs, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			errs := Validate(defs)
+			var found bool
+			for _, e := range errs {
+				if ve, ok := e.(*ValidationError); ok && ve.Rule == "async-sequence-idl-to-js" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected a ValidationError with rule %q; got: %v", "async-sequence-idl-to-js", errs)
+			}
+		})
+	}
+}
+
+// TestValidateNullableUnionDictGaps covers three spec-compliance gaps found in
+// code review of CATH-7: multi-hop typedef resolution, async-iterable argument
+// types, and constructor argument types.
+func TestValidateNullableUnionDictGaps(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			// Finding 1: validateNullableUnionDict only follows one typedef hop.
+			// A two-hop chain (V → U → union) must still fire no-nullable-union-dict.
+			name: "multi-hop typedef chain",
+			src: `dictionary Dict { long x; };
+typedef (boolean or Dict) U;
+typedef U V;
+typedef V? ChainedNullable;`,
+		},
+		{
+			// Finding 2: IterableLike.Arguments never checked.
+			// An async iterable whose argument has a nullable union containing a
+			// dictionary must fire no-nullable-union-dict.
+			name: "async iterable argument",
+			src: `dictionary Dict { long x; };
+[Exposed=Window]
+interface I {
+  async iterable<long>(optional (Dict or boolean)? bufferSize);
+};`,
+		},
+		{
+			// Finding 3: *Constructor has no validateMember, so constructor
+			// argument types are never validated.
+			name: "constructor argument",
+			src: `dictionary Dict { long x; };
+[Exposed=Window]
+interface I {
+  constructor((Dict or boolean)? arg);
+};`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			defs, err := Parse(tc.src)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			errs := Validate(defs)
+			var found bool
+			for _, e := range errs {
+				if ve, ok := e.(*ValidationError); ok && ve.Rule == "no-nullable-union-dict" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected a ValidationError with rule %q; got: %v", "no-nullable-union-dict", errs)
+			}
+		})
+	}
 }
 
 // stripEOF removes a trailing {type:"eof", value:""} entry from a top-level array.
