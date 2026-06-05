@@ -137,10 +137,22 @@ func (iface *Interface) validate(defs *Definitions) []error {
 		if op, ok := m.(*Operation); ok {
 			seedOp(op, statics, nonstatics)
 		}
-		// no-nullable-union-dict on iterable/maplike/setlike types.
+		// no-nullable-union-dict on constructor argument types.
+		// *Constructor has no validateMember (it carries no rule of its own),
+		// so we handle its argument types explicitly here.
+		if con, ok := m.(*Constructor); ok {
+			for _, arg := range con.Arguments {
+				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
+			}
+		}
+		// no-nullable-union-dict on iterable/maplike/setlike types and arguments.
 		if il, ok := m.(*IterableLike); ok {
 			for _, t := range il.Types {
 				errs = append(errs, validateNullableUnionDict(t, defs)...)
+			}
+			// Also check async-iterable buffer-size / optional arguments.
+			for _, arg := range il.Arguments {
+				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 			}
 		}
 	}
@@ -149,16 +161,12 @@ func (iface *Interface) validate(defs *Definitions) []error {
 	// Only applies to regular interfaces — webidl2.js rejects [Constructor] on
 	// mixins and callback interfaces at parse time, so the validator should not
 	// fire for those variants.
-	if iface.Variant == IfaceRegular {
-		for _, ea := range iface.ExtAttrs {
-			if ea.Name == "Constructor" {
-				errs = append(errs, &ValidationError{
-					Rule: "constructor-member",
-					Message: "Constructors should now be represented as a `constructor()` operation " +
-						"on the interface instead of `[Constructor]` extended attribute.",
-				})
-			}
-		}
+	if iface.Variant == IfaceRegular && hasExtAttr(iface.ExtAttrs, "Constructor") {
+		errs = append(errs, &ValidationError{
+			Rule: "constructor-member",
+			Message: "Constructors should now be represented as a `constructor()` operation " +
+				"on the interface instead of `[Constructor]` extended attribute.",
+		})
 	}
 
 	// no-cross-overload: only applies to the canonical (non-partial) regular interface.
@@ -258,22 +266,26 @@ func idlTypeIncludesDictionaryRec(idlType *IDLType, defs *Definitions, visited m
 	return nil
 }
 
+// hasExtAttr reports whether any entry in attrs has the given name.
+func hasExtAttr(attrs []*ExtAttr, name string) bool {
+	for _, ea := range attrs {
+		if ea.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // idlTypeIncludesEnforceRange reports whether the IDLType carries an
 // [EnforceRange] extended attribute, either directly or via a one-level typedef.
 func idlTypeIncludesEnforceRange(idlType *IDLType, defs *Definitions) bool {
-	for _, ea := range idlType.ExtAttrs {
-		if ea.Name == "EnforceRange" {
-			return true
-		}
+	if hasExtAttr(idlType.ExtAttrs, "EnforceRange") {
+		return true
 	}
 	if !idlType.Union && idlType.Base != "" {
 		if def, ok := defs.Unique[semanticName(idlType.Base)]; ok {
 			if td, ok := def.(*Typedef); ok {
-				for _, ea := range td.IDLType.ExtAttrs {
-					if ea.Name == "EnforceRange" {
-						return true
-					}
-				}
+				return hasExtAttr(td.IDLType.ExtAttrs, "EnforceRange")
 			}
 		}
 	}
@@ -290,15 +302,19 @@ func idlTypeIncludesEnforceRange(idlType *IDLType, defs *Definitions) bool {
 func validateNullableUnionDict(idlType *IDLType, defs *Definitions) []error {
 	// Determine the "target" union:
 	//   • If idlType is itself a union, it is the target.
-	//   • If idlType is a non-union reference to a typedef whose IDLType is a
-	//     union, that typedef's IDLType is the target.
+	//   • If idlType is a non-union reference that resolves to ANY typedef,
+	//     that typedef's IDLType is the target.  We do NOT require
+	//     td.IDLType.Union here — idlTypeIncludesDictionary already follows
+	//     multi-level typedef chains, so passing a non-union typedef IDLType
+	//     as the target is safe and necessary for two-hop chains like
+	//     V? → typedef U → typedef (Dict or boolean).
 	//   • Otherwise there is no target (no union in scope).
 	var target *IDLType
 	if idlType.Union {
 		target = idlType
 	} else if idlType.Base != "" {
 		if def, ok := defs.Unique[semanticName(idlType.Base)]; ok {
-			if td, ok := def.(*Typedef); ok && td.IDLType.Union {
+			if td, ok := def.(*Typedef); ok {
 				target = td.IDLType
 			}
 		}
