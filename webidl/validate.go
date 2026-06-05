@@ -21,10 +21,144 @@ type Definitions struct {
 	MixinMap   map[string][]*Interface // target name → included mixin interfaces
 }
 
-// definitionValidator is implemented by AST nodes that validate themselves.
-// CATH-6, CATH-7, CATH-8, CATH-9 add validate methods to the relevant types.
+// definitionValidator is implemented by top-level AST nodes that validate themselves.
 type definitionValidator interface {
 	validate(defs *Definitions) []error
+}
+
+// memberValidator is implemented by interface/namespace members that have per-member rules.
+type memberValidator interface {
+	validateMember(defs *Definitions) []error
+}
+
+// validateMember implements the incomplete-op rule:
+// regular and static operations must have both a return type and an identifier.
+func (op *Operation) validateMember(_ *Definitions) []error {
+	if op.Name == "" && (op.Special == "" || op.Special == "static") {
+		return []error{&ValidationError{
+			Rule:    "incomplete-op",
+			Message: "Regular or static operations must have both a return type and an identifier.",
+		}}
+	}
+	return nil
+}
+
+// validate implements per-member rules for namespaces (currently: incomplete-op).
+func (ns *Namespace) validate(defs *Definitions) []error {
+	var errs []error
+	for _, m := range ns.Members {
+		if v, ok := m.(memberValidator); ok {
+			errs = append(errs, v.validateMember(defs)...)
+		}
+	}
+	return errs
+}
+
+// validate implements constructor-member and no-cross-overload rules for interfaces.
+// The member walk also seeds the operation-name maps forwarded to checkCrossOverload,
+// so iface.Members is traversed only once.
+func (iface *Interface) validate(defs *Definitions) []error {
+	var errs []error
+	statics := make(map[string]bool)
+	nonstatics := make(map[string]bool)
+
+	// Single pass: run per-member rules and seed the cross-overload maps.
+	for _, m := range iface.Members {
+		if v, ok := m.(memberValidator); ok {
+			errs = append(errs, v.validateMember(defs)...)
+		}
+		if op, ok := m.(*Operation); ok {
+			seedOp(op, statics, nonstatics)
+		}
+	}
+
+	// constructor-member: [Constructor] extended attribute is the legacy form.
+	// Only applies to regular interfaces — webidl2.js rejects [Constructor] on
+	// mixins and callback interfaces at parse time, so the validator should not
+	// fire for those variants.
+	if iface.Variant == IfaceRegular {
+		for _, ea := range iface.ExtAttrs {
+			if ea.Name == "Constructor" {
+				errs = append(errs, &ValidationError{
+					Rule: "constructor-member",
+					Message: "Constructors should now be represented as a `constructor()` operation " +
+						"on the interface instead of `[Constructor]` extended attribute.",
+				})
+			}
+		}
+	}
+
+	// no-cross-overload: only applies to the canonical (non-partial) regular interface.
+	// Mixin and callback interfaces have no equivalent rule in webidl2.js.
+	if !iface.Partial && iface.Variant == IfaceRegular {
+		errs = append(errs, checkCrossOverload(defs, iface, statics, nonstatics)...)
+	}
+
+	return errs
+}
+
+// seedOp records op.Name in statics (for static operations) or nonstatics (for all
+// others). Unnamed operations (getters, setters, …) are silently skipped.
+func seedOp(op *Operation, statics, nonstatics map[string]bool) {
+	if op.Name == "" {
+		return
+	}
+	if op.Special == "static" {
+		statics[op.Name] = true
+	} else {
+		nonstatics[op.Name] = true
+	}
+}
+
+// checkCrossOverload detects operations re-defined across partials or included mixins.
+// statics and nonstatics are the base interface's own operation names, pre-seeded by
+// the caller during its member walk. Operations may be overloaded within the same scope,
+// but not across scopes.
+func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics map[string]bool) []error {
+	name := semanticName(iface.Name)
+	var errs []error
+
+	checkExtension := func(members []Member) {
+		// Pass 1: check each operation against base + already-accumulated names.
+		for _, m := range members {
+			op, ok := m.(*Operation)
+			if !ok || op.Name == "" {
+				continue
+			}
+			if op.Special == "static" {
+				if statics[op.Name] {
+					errs = append(errs, &ValidationError{
+						Rule:    "no-cross-overload",
+						Message: fmt.Sprintf("The static operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+					})
+				}
+			} else {
+				if nonstatics[op.Name] {
+					errs = append(errs, &ValidationError{
+						Rule:    "no-cross-overload",
+						Message: fmt.Sprintf("The operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+					})
+				}
+			}
+		}
+		// Pass 2: accumulate names so subsequent extensions see earlier ones.
+		for _, m := range members {
+			if op, ok := m.(*Operation); ok {
+				seedOp(op, statics, nonstatics)
+			}
+		}
+	}
+
+	for _, p := range defs.Partials[name] {
+		if pi, ok := p.(*Interface); ok {
+			checkExtension(pi.Members)
+		}
+	}
+	for _, mixin := range defs.MixinMap[name] {
+		checkExtension(mixin.Members)
+	}
+
+	return errs
 }
 
 // Validate runs semantic validation over a parsed AST and returns all errors found.
