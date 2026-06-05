@@ -207,6 +207,14 @@ func (iface *Interface) validate(defs *Definitions) []error {
 			for i, arg := range con.Arguments {
 				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 				errs = append(errs, validateArgDictRules(arg, i, con.Arguments, defs)...)
+				errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
+				errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
+				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+					errs = append(errs, &ValidationError{
+						Rule:    "migrate-allowshared",
+						Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+					})
+				}
 			}
 		}
 		// Rules on iterable/maplike/setlike types and arguments.
@@ -221,11 +229,14 @@ func (iface *Interface) validate(defs *Definitions) []error {
 			for _, t := range il.Types {
 				errs = append(errs, validateNullableUnionDict(t, defs)...)
 				errs = append(errs, checkAllowSharedIDLType(t)...)
+				errs = append(errs, checkLegacyIDLType(t)...)
 			}
 			// Also check async-iterable buffer-size / optional arguments.
 			for i, arg := range il.Arguments {
 				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 				errs = append(errs, validateArgDictRules(arg, i, il.Arguments, defs)...)
+				errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
+				errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
 				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
 					errs = append(errs, &ValidationError{
 						Rule:    "migrate-allowshared",
@@ -274,16 +285,20 @@ func (iface *Interface) validate(defs *Definitions) []error {
 	return errs
 }
 
-// validate checks typedef IDLTypes for the no-nullable-union-dict rule.
+// validate checks typedef IDLTypes for the no-nullable-union-dict and renamed-legacy rules.
 func (td *Typedef) validate(defs *Definitions) []error {
-	return validateNullableUnionDict(td.IDLType, defs)
+	errs := checkLegacyIDLType(td.IDLType)
+	errs = append(errs, validateNullableUnionDict(td.IDLType, defs)...)
+	return errs
 }
 
-// validate checks dictionary field types for the no-nullable-union-dict rule.
+// validate checks dictionary field types for the no-nullable-union-dict and renamed-legacy rules.
 func (dict *Dictionary) validate(defs *Definitions) []error {
-	var errs []error
+	errs := checkLegacyExtAttrs(dict.ExtAttrs)
 	for _, f := range dict.Members {
 		errs = append(errs, validateNullableUnionDict(f.IDLType, defs)...)
+		errs = append(errs, checkLegacyExtAttrs(f.ExtAttrs)...)
+		errs = append(errs, checkLegacyIDLType(f.IDLType)...)
 	}
 	return errs
 }
