@@ -151,16 +151,22 @@ func ruleFromBaseline(s string) string {
 // implementedRules is the set of validator rules this implementation handles.
 // Add the rule name here when landing each CATH-2 sub-ticket.
 var implementedRules = map[string]bool{
-	"no-duplicate":             true,
-	"no-cross-overload":        true,
-	"constructor-member":       true,
-	"incomplete-op":            true,
-	"attr-invalid-type":        true, // CATH-7
-	"no-nullable-union-dict":   true, // CATH-7
-	"async-sequence-idl-to-js": true, // CATH-7
-	"dict-arg-default":         true, // CATH-8
-	"dict-arg-optional":        true, // CATH-8
-	"no-nullable-dict-arg":     true, // CATH-8
+	"no-duplicate":                   true,
+	"no-cross-overload":              true,
+	"constructor-member":             true,
+	"incomplete-op":                  true,
+	"attr-invalid-type":              true, // CATH-7
+	"no-nullable-union-dict":         true, // CATH-7
+	"async-sequence-idl-to-js":       true, // CATH-7
+	"dict-arg-default":               true, // CATH-8
+	"dict-arg-optional":              true, // CATH-8
+	"no-nullable-dict-arg":           true, // CATH-8
+	"require-exposed":                true, // CATH-9
+	"no-constructible-global":        true, // CATH-9
+	"renamed-legacy":                 true, // CATH-9
+	"migrate-allowshared":            true, // CATH-9
+	"replace-void":                   true, // CATH-9
+	"obsolete-async-iterable-syntax": true, // CATH-9
 }
 
 // TestValidateAsyncSequenceIdlToJs tests that async_sequence types cannot be

@@ -57,11 +57,33 @@ func (op *Operation) validateMember(defs *Definitions) []error {
 			})
 		}
 		errs = append(errs, validateNullableUnionDict(op.ReturnType, defs)...)
+
+		// replace-void: return type must not be void.
+		if op.ReturnType.Base == "void" {
+			errs = append(errs, &ValidationError{
+				Rule:    "replace-void",
+				Message: "`void` is now replaced by `undefined`.",
+			})
+		}
+		errs = append(errs, checkLegacyIDLType(op.ReturnType)...)
 	}
+
+	// renamed-legacy: check operation's own extended attributes.
+	errs = append(errs, checkLegacyExtAttrs(op.ExtAttrs)...)
 
 	for i, arg := range op.Arguments {
 		errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 		errs = append(errs, validateArgDictRules(arg, i, op.Arguments, defs)...)
+		errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
+		errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
+		// migrate-allowshared: [AllowShared] is placed on the *argument* (not the
+		// IDLType) when the caller writes `[AllowShared] BufferSource param`.
+		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+			errs = append(errs, &ValidationError{
+				Rule:    "migrate-allowshared",
+				Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+			})
+		}
 	}
 
 	return errs
@@ -103,6 +125,20 @@ func (attr *Attribute) validateMember(defs *Definitions) []error {
 	// no-nullable-union-dict applies to the attribute's IDLType as well.
 	errs = append(errs, validateNullableUnionDict(attr.IDLType, defs)...)
 
+	// renamed-legacy: check attribute's own ExtAttrs and its IDLType (covers
+	// type-level attrs like [TreatNullAs] on the attribute's type expression).
+	errs = append(errs, checkLegacyExtAttrs(attr.ExtAttrs)...)
+	errs = append(errs, checkLegacyIDLType(attr.IDLType)...)
+
+	// migrate-allowshared: [AllowShared] on a BufferSource attribute is deprecated.
+	// Note: [AllowShared] is an attribute-level ExtAttr, not a type-level one.
+	if attr.IDLType.Base == "BufferSource" && hasExtAttr(attr.ExtAttrs, "AllowShared") {
+		errs = append(errs, &ValidationError{
+			Rule:    "migrate-allowshared",
+			Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+		})
+	}
+
 	return errs
 }
 
@@ -110,10 +146,21 @@ func (attr *Attribute) validateMember(defs *Definitions) []error {
 // Definition-level validators
 // ---------------------------------------------------------------------------
 
-// validate implements per-member rules for namespaces (currently: incomplete-op,
-// async-sequence-idl-to-js).
+// validate implements per-member rules for namespaces.
 func (ns *Namespace) validate(defs *Definitions) []error {
 	var errs []error
+
+	// require-exposed: non-partial namespaces must carry [Exposed].
+	if !ns.Partial && !hasExtAttr(ns.ExtAttrs, "Exposed") {
+		errs = append(errs, &ValidationError{
+			Rule:    "require-exposed",
+			Message: "Namespaces must have [Exposed] extended attribute.",
+		})
+	}
+
+	// renamed-legacy: check namespace's own extended attributes.
+	errs = append(errs, checkLegacyExtAttrs(ns.ExtAttrs)...)
+
 	for _, m := range ns.Members {
 		if v, ok := m.(memberValidator); ok {
 			errs = append(errs, v.validateMember(defs)...)
@@ -122,13 +169,27 @@ func (ns *Namespace) validate(defs *Definitions) []error {
 	return errs
 }
 
-// validate implements constructor-member and no-cross-overload rules for interfaces.
+// validate implements constructor-member, no-cross-overload, require-exposed,
+// no-constructible-global, and related CATH-9 rules for interfaces.
 // The member walk also seeds the operation-name maps forwarded to checkCrossOverload,
 // so iface.Members is traversed only once.
 func (iface *Interface) validate(defs *Definitions) []error {
 	var errs []error
 	statics := make(map[string]bool)
 	nonstatics := make(map[string]bool)
+	hasConstructorMember := false // tracked for no-constructible-global
+
+	// require-exposed: regular (non-partial, non-mixin, non-callback) interfaces
+	// must carry [Exposed].
+	if iface.Variant == IfaceRegular && !iface.Partial && !hasExtAttr(iface.ExtAttrs, "Exposed") {
+		errs = append(errs, &ValidationError{
+			Rule:    "require-exposed",
+			Message: "Interfaces must have [Exposed] extended attribute.",
+		})
+	}
+
+	// renamed-legacy: check interface's own extended attributes.
+	errs = append(errs, checkLegacyExtAttrs(iface.ExtAttrs)...)
 
 	// Single pass: run per-member rules and seed the cross-overload maps.
 	for _, m := range iface.Members {
@@ -142,21 +203,35 @@ func (iface *Interface) validate(defs *Definitions) []error {
 		// *Constructor has no validateMember (it carries no rule of its own),
 		// so we handle its argument types explicitly here.
 		if con, ok := m.(*Constructor); ok {
+			hasConstructorMember = true
 			for i, arg := range con.Arguments {
 				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 				errs = append(errs, validateArgDictRules(arg, i, con.Arguments, defs)...)
 			}
 		}
-		// no-nullable-union-dict and dict-arg rules on iterable/maplike/setlike
-		// types and arguments.
+		// Rules on iterable/maplike/setlike types and arguments.
 		if il, ok := m.(*IterableLike); ok {
+			// obsolete-async-iterable-syntax: `async iterable` (space) is the old form.
+			if il.Async && il.Kind == IterIterable {
+				errs = append(errs, &ValidationError{
+					Rule:    "obsolete-async-iterable-syntax",
+					Message: "`async iterable` is now changed to `async_iterable`.",
+				})
+			}
 			for _, t := range il.Types {
 				errs = append(errs, validateNullableUnionDict(t, defs)...)
+				errs = append(errs, checkAllowSharedIDLType(t)...)
 			}
 			// Also check async-iterable buffer-size / optional arguments.
 			for i, arg := range il.Arguments {
 				errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 				errs = append(errs, validateArgDictRules(arg, i, il.Arguments, defs)...)
+				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+					errs = append(errs, &ValidationError{
+						Rule:    "migrate-allowshared",
+						Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+					})
+				}
 			}
 		}
 	}
@@ -171,6 +246,23 @@ func (iface *Interface) validate(defs *Definitions) []error {
 			Message: "Constructors should now be represented as a `constructor()` operation " +
 				"on the interface instead of `[Constructor]` extended attribute.",
 		})
+	}
+
+	// no-constructible-global: [Global] regular interfaces cannot have constructors
+	// or [LegacyFactoryFunction] factory functions.
+	if iface.Variant == IfaceRegular && hasExtAttr(iface.ExtAttrs, "Global") {
+		if hasExtAttr(iface.ExtAttrs, "LegacyFactoryFunction") {
+			errs = append(errs, &ValidationError{
+				Rule:    "no-constructible-global",
+				Message: "Interfaces marked as [Global] cannot have factory functions.",
+			})
+		}
+		if hasConstructorMember {
+			errs = append(errs, &ValidationError{
+				Rule:    "no-constructible-global",
+				Message: "Interfaces marked as [Global] cannot have constructors.",
+			})
+		}
 	}
 
 	// no-cross-overload: only applies to the canonical (non-partial) regular interface.
@@ -196,10 +288,12 @@ func (dict *Dictionary) validate(defs *Definitions) []error {
 	return errs
 }
 
-// validate checks callback arguments for the async-sequence-idl-to-js rule and
-// the return type + arguments for no-nullable-union-dict and dict-arg rules.
+// validate checks callback arguments and return type for multiple rules.
 func (cb *CallbackFunction) validate(defs *Definitions) []error {
 	var errs []error
+
+	// renamed-legacy: check callback's own extended attributes.
+	errs = append(errs, checkLegacyExtAttrs(cb.ExtAttrs)...)
 
 	for i, arg := range cb.Arguments {
 		if arg.IDLType.Generic == "async_sequence" {
@@ -210,10 +304,26 @@ func (cb *CallbackFunction) validate(defs *Definitions) []error {
 		}
 		errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 		errs = append(errs, validateArgDictRules(arg, i, cb.Arguments, defs)...)
+		errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
+		errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
+		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+			errs = append(errs, &ValidationError{
+				Rule:    "migrate-allowshared",
+				Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+			})
+		}
 	}
 
 	if cb.ReturnType != nil {
 		errs = append(errs, validateNullableUnionDict(cb.ReturnType, defs)...)
+		// replace-void: callback return type must not be void.
+		if cb.ReturnType.Base == "void" {
+			errs = append(errs, &ValidationError{
+				Rule:    "replace-void",
+				Message: "`void` is now replaced by `undefined`.",
+			})
+		}
+		errs = append(errs, checkLegacyIDLType(cb.ReturnType)...)
 	}
 
 	return errs
@@ -295,6 +405,73 @@ func hasExtAttr(attrs []*ExtAttr, name string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// CATH-9 helpers: renamed-legacy, migrate-allowshared
+// ---------------------------------------------------------------------------
+
+// legacyAttrRenames maps each deprecated extended-attribute name to its
+// [Legacy…] replacement, as codified by the renamed-legacy rule.
+var legacyAttrRenames = map[string]string{
+	"NamedConstructor":    "LegacyFactoryFunction",
+	"NoInterfaceObject":   "LegacyNoInterfaceObject",
+	"OverrideBuiltins":    "LegacyOverrideBuiltIns",
+	"LenientSetter":       "LegacyLenientSetter",
+	"LenientThis":         "LegacyLenientThis",
+	"TreatNullAs":         "LegacyNullToEmptyString",
+	"Unforgeable":         "LegacyUnforgeable",
+	"TreatNonObjectAsNull": "LegacyTreatNonObjectAsNull",
+}
+
+// checkLegacyExtAttrs returns a renamed-legacy ValidationError for each
+// deprecated extended attribute found in attrs.
+func checkLegacyExtAttrs(attrs []*ExtAttr) []error {
+	var errs []error
+	for _, ea := range attrs {
+		if newName, deprecated := legacyAttrRenames[ea.Name]; deprecated {
+			errs = append(errs, &ValidationError{
+				Rule: "renamed-legacy",
+				Message: fmt.Sprintf(
+					"[%s] is a legacy extended attribute; use [%s] instead.",
+					ea.Name, newName,
+				),
+			})
+		}
+	}
+	return errs
+}
+
+// checkLegacyIDLType checks an IDLType and all its subtypes for deprecated
+// type-level extended attributes (e.g. [TreatNullAs]) caught by renamed-legacy.
+func checkLegacyIDLType(t *IDLType) []error {
+	if t == nil {
+		return nil
+	}
+	errs := checkLegacyExtAttrs(t.ExtAttrs)
+	for _, sub := range t.Subtypes {
+		errs = append(errs, checkLegacyIDLType(sub)...)
+	}
+	return errs
+}
+
+// checkAllowSharedIDLType fires migrate-allowshared when an IDLType carries
+// [AllowShared] on a BufferSource base type. Recurses into subtypes.
+func checkAllowSharedIDLType(t *IDLType) []error {
+	if t == nil {
+		return nil
+	}
+	var errs []error
+	if t.Base == "BufferSource" && hasExtAttr(t.ExtAttrs, "AllowShared") {
+		errs = append(errs, &ValidationError{
+			Rule:    "migrate-allowshared",
+			Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
+		})
+	}
+	for _, sub := range t.Subtypes {
+		errs = append(errs, checkAllowSharedIDLType(sub)...)
+	}
+	return errs
 }
 
 // idlTypeIncludesEnforceRange reports whether the IDLType carries an
