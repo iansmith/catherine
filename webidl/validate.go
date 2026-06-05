@@ -43,54 +43,68 @@ func (op *Operation) validateMember(_ *Definitions) []error {
 	return nil
 }
 
-// validate implements constructor-member and no-cross-overload rules for interfaces.
-func (iface *Interface) validate(defs *Definitions) []error {
+// validate implements per-member rules for namespaces (currently: incomplete-op).
+func (ns *Namespace) validate(defs *Definitions) []error {
 	var errs []error
-
-	// Walk members for per-member rules (e.g. incomplete-op on operations).
-	for _, m := range iface.Members {
+	for _, m := range ns.Members {
 		if v, ok := m.(memberValidator); ok {
 			errs = append(errs, v.validateMember(defs)...)
 		}
 	}
+	return errs
+}
+
+// validate implements constructor-member and no-cross-overload rules for interfaces.
+// The member walk also seeds the operation-name maps forwarded to checkCrossOverload,
+// so iface.Members is traversed only once.
+func (iface *Interface) validate(defs *Definitions) []error {
+	var errs []error
+	statics := make(map[string]bool)
+	nonstatics := make(map[string]bool)
+
+	// Single pass: run per-member rules and seed the cross-overload maps.
+	for _, m := range iface.Members {
+		if v, ok := m.(memberValidator); ok {
+			errs = append(errs, v.validateMember(defs)...)
+		}
+		if op, ok := m.(*Operation); ok && op.Name != "" {
+			if op.Special == "static" {
+				statics[op.Name] = true
+			} else {
+				nonstatics[op.Name] = true
+			}
+		}
+	}
 
 	// constructor-member: [Constructor] extended attribute is the legacy form.
-	for _, ea := range iface.ExtAttrs {
-		if ea.Name == "Constructor" {
-			errs = append(errs, &ValidationError{
-				Rule: "constructor-member",
-				Message: "Constructors should now be represented as a `constructor()` operation " +
-					"on the interface instead of `[Constructor]` extended attribute.",
-			})
+	// Only applies to regular interfaces — webidl2.js rejects [Constructor] on
+	// mixins and callback interfaces at parse time, so the validator should not
+	// fire for those variants.
+	if iface.Variant == IfaceRegular {
+		for _, ea := range iface.ExtAttrs {
+			if ea.Name == "Constructor" {
+				errs = append(errs, &ValidationError{
+					Rule: "constructor-member",
+					Message: "Constructors should now be represented as a `constructor()` operation " +
+						"on the interface instead of `[Constructor]` extended attribute.",
+				})
+			}
 		}
 	}
 
 	// no-cross-overload: only applies to the canonical (non-partial) interface.
 	if !iface.Partial {
-		errs = append(errs, checkCrossOverload(defs, iface)...)
+		errs = append(errs, checkCrossOverload(defs, iface, statics, nonstatics)...)
 	}
 
 	return errs
 }
 
 // checkCrossOverload detects operations re-defined across partials or included mixins.
-// Operations may be overloaded within the same scope, but not across scopes.
-func checkCrossOverload(defs *Definitions, iface *Interface) []error {
-	statics := make(map[string]bool)
-	nonstatics := make(map[string]bool)
-
-	for _, m := range iface.Members {
-		op, ok := m.(*Operation)
-		if !ok || op.Name == "" {
-			continue
-		}
-		if op.Special == "static" {
-			statics[op.Name] = true
-		} else {
-			nonstatics[op.Name] = true
-		}
-	}
-
+// statics and nonstatics are the base interface's own operation names, pre-seeded by
+// the caller during its member walk. Operations may be overloaded within the same scope,
+// but not across scopes.
+func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics map[string]bool) []error {
 	name := semanticName(iface.Name)
 	var errs []error
 
@@ -105,44 +119,37 @@ func checkCrossOverload(defs *Definitions, iface *Interface) []error {
 	}
 
 	for _, members := range extensions {
-		var extStatics, extNonstatics []*Operation
+		// Pass 1: check each operation against base + already-accumulated names.
 		for _, m := range members {
 			op, ok := m.(*Operation)
-			if !ok {
+			if !ok || op.Name == "" {
 				continue
 			}
 			if op.Special == "static" {
-				extStatics = append(extStatics, op)
+				if statics[op.Name] {
+					errs = append(errs, &ValidationError{
+						Rule:    "no-cross-overload",
+						Message: fmt.Sprintf("The static operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+					})
+				}
 			} else {
-				extNonstatics = append(extNonstatics, op)
+				if nonstatics[op.Name] {
+					errs = append(errs, &ValidationError{
+						Rule:    "no-cross-overload",
+						Message: fmt.Sprintf("The operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
+					})
+				}
 			}
 		}
-
-		for _, op := range extStatics {
-			if op.Name != "" && statics[op.Name] {
-				errs = append(errs, &ValidationError{
-					Rule:    "no-cross-overload",
-					Message: fmt.Sprintf("The static operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
-				})
+		// Pass 2: accumulate names so subsequent extensions see earlier ones.
+		for _, m := range members {
+			op, ok := m.(*Operation)
+			if !ok || op.Name == "" {
+				continue
 			}
-		}
-		for _, op := range extNonstatics {
-			if op.Name != "" && nonstatics[op.Name] {
-				errs = append(errs, &ValidationError{
-					Rule:    "no-cross-overload",
-					Message: fmt.Sprintf("The operation %q has already been defined for the base interface %q either in itself or in a mixin", op.Name, name),
-				})
-			}
-		}
-
-		// Accumulate names so subsequent extensions see earlier ones.
-		for _, op := range extStatics {
-			if op.Name != "" {
+			if op.Special == "static" {
 				statics[op.Name] = true
-			}
-		}
-		for _, op := range extNonstatics {
-			if op.Name != "" {
+			} else {
 				nonstatics[op.Name] = true
 			}
 		}
