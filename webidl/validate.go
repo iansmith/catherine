@@ -31,19 +31,86 @@ type memberValidator interface {
 	validateMember(defs *Definitions) []error
 }
 
-// validateMember implements the incomplete-op rule:
-// regular and static operations must have both a return type and an identifier.
-func (op *Operation) validateMember(_ *Definitions) []error {
+// ---------------------------------------------------------------------------
+// Member-level validators
+// ---------------------------------------------------------------------------
+
+// validateMember implements the incomplete-op rule and async-sequence-idl-to-js:
+//   - regular and static operations must have both a return type and an identifier.
+//   - the return type must not be async_sequence.
+//   - no argument type may be a nullable union containing a dictionary.
+func (op *Operation) validateMember(defs *Definitions) []error {
+	var errs []error
+
 	if op.Name == "" && (op.Special == "" || op.Special == "static") {
-		return []error{&ValidationError{
+		errs = append(errs, &ValidationError{
 			Rule:    "incomplete-op",
 			Message: "Regular or static operations must have both a return type and an identifier.",
-		}}
+		})
 	}
-	return nil
+
+	if op.ReturnType != nil {
+		if op.ReturnType.Generic == "async_sequence" {
+			errs = append(errs, &ValidationError{
+				Rule:    "async-sequence-idl-to-js",
+				Message: "async_sequence types cannot be returned by an operation.",
+			})
+		}
+		errs = append(errs, validateNullableUnionDict(op.ReturnType, defs)...)
+	}
+
+	for _, arg := range op.Arguments {
+		errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
+	}
+
+	return errs
 }
 
-// validate implements per-member rules for namespaces (currently: incomplete-op).
+// validateMember implements the attr-invalid-type rule for attributes:
+//   - attributes may not have sequence, record, or async_sequence types.
+//   - attributes may not have dictionary types (directly, via union, or via typedef).
+//   - readonly attributes may not have [EnforceRange] on their type (directly or via typedef).
+//
+// Also checks no-nullable-union-dict for the attribute's IDLType.
+func (attr *Attribute) validateMember(defs *Definitions) []error {
+	var errs []error
+
+	// Rule: sequence / record / async_sequence not allowed as attribute types.
+	if g := attr.IDLType.Generic; g == "async_sequence" || g == "sequence" || g == "record" {
+		errs = append(errs, &ValidationError{
+			Rule:    "attr-invalid-type",
+			Message: fmt.Sprintf("Attributes cannot accept %s types.", g),
+		})
+	}
+
+	// Rule: dictionary types (or unions/typedefs containing one) not allowed.
+	if idlTypeIncludesDictionary(attr.IDLType, defs) != nil {
+		errs = append(errs, &ValidationError{
+			Rule:    "attr-invalid-type",
+			Message: "Attributes cannot accept dictionary types.",
+		})
+	}
+
+	// Rule: readonly attributes may not use [EnforceRange].
+	if attr.Readonly && idlTypeIncludesEnforceRange(attr.IDLType, defs) {
+		errs = append(errs, &ValidationError{
+			Rule:    "attr-invalid-type",
+			Message: "Readonly attributes cannot accept [EnforceRange] extended attribute.",
+		})
+	}
+
+	// no-nullable-union-dict applies to the attribute's IDLType as well.
+	errs = append(errs, validateNullableUnionDict(attr.IDLType, defs)...)
+
+	return errs
+}
+
+// ---------------------------------------------------------------------------
+// Definition-level validators
+// ---------------------------------------------------------------------------
+
+// validate implements per-member rules for namespaces (currently: incomplete-op,
+// async-sequence-idl-to-js).
 func (ns *Namespace) validate(defs *Definitions) []error {
 	var errs []error
 	for _, m := range ns.Members {
@@ -69,6 +136,12 @@ func (iface *Interface) validate(defs *Definitions) []error {
 		}
 		if op, ok := m.(*Operation); ok {
 			seedOp(op, statics, nonstatics)
+		}
+		// no-nullable-union-dict on iterable/maplike/setlike types.
+		if il, ok := m.(*IterableLike); ok {
+			for _, t := range il.Types {
+				errs = append(errs, validateNullableUnionDict(t, defs)...)
+			}
 		}
 	}
 
@@ -96,6 +169,164 @@ func (iface *Interface) validate(defs *Definitions) []error {
 
 	return errs
 }
+
+// validate checks typedef IDLTypes for the no-nullable-union-dict rule.
+func (td *Typedef) validate(defs *Definitions) []error {
+	return validateNullableUnionDict(td.IDLType, defs)
+}
+
+// validate checks dictionary field types for the no-nullable-union-dict rule.
+func (dict *Dictionary) validate(defs *Definitions) []error {
+	var errs []error
+	for _, f := range dict.Members {
+		errs = append(errs, validateNullableUnionDict(f.IDLType, defs)...)
+	}
+	return errs
+}
+
+// validate checks callback arguments for the async-sequence-idl-to-js rule and
+// the return type + arguments for no-nullable-union-dict.
+func (cb *CallbackFunction) validate(defs *Definitions) []error {
+	var errs []error
+
+	for _, arg := range cb.Arguments {
+		if arg.IDLType.Generic == "async_sequence" {
+			errs = append(errs, &ValidationError{
+				Rule:    "async-sequence-idl-to-js",
+				Message: "async_sequence types cannot be returned as a callback argument.",
+			})
+		}
+		errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
+	}
+
+	if cb.ReturnType != nil {
+		errs = append(errs, validateNullableUnionDict(cb.ReturnType, defs)...)
+	}
+
+	return errs
+}
+
+// ---------------------------------------------------------------------------
+// Type-level helpers
+// ---------------------------------------------------------------------------
+
+// idlTypeIncludesDictionary returns the first IDLType reference in the type
+// tree that resolves to a dictionary, or nil if none is found. It follows
+// typedef chains (with a cycle guard) and walks union subtypes. Nullable
+// bare-dictionary references (Dict?) are NOT counted — only non-nullable ones.
+func idlTypeIncludesDictionary(idlType *IDLType, defs *Definitions) *IDLType {
+	return idlTypeIncludesDictionaryRec(idlType, defs, make(map[string]bool))
+}
+
+func idlTypeIncludesDictionaryRec(idlType *IDLType, defs *Definitions, visited map[string]bool) *IDLType {
+	if !idlType.Union {
+		name := semanticName(idlType.Base)
+		if name != "" {
+			if def, ok := defs.Unique[name]; ok {
+				switch d := def.(type) {
+				case *Typedef:
+					// Cycle guard: if we've already started evaluating this typedef,
+					// treat the result as indeterminate (nil) to break the cycle.
+					if !visited[name] {
+						visited[name] = true
+						if r := idlTypeIncludesDictionaryRec(d.IDLType, defs, visited); r != nil {
+							return idlType // the reference is the current type
+						}
+					}
+				case *Dictionary:
+					// Only a non-nullable reference counts as "includes dictionary".
+					// Dict? is the nullable type whose inner type is a dictionary —
+					// not itself a dictionary for the purposes of this check.
+					if !idlType.Nullable {
+						return idlType
+					}
+				}
+			}
+		}
+	}
+	// Walk subtypes (for unions and generics).
+	for _, sub := range idlType.Subtypes {
+		if r := idlTypeIncludesDictionaryRec(sub, defs, visited); r != nil {
+			// For a union subtype, propagate the inner reference directly.
+			// For a non-union subtype, the subtype itself is the reference.
+			if sub.Union {
+				return r
+			}
+			return sub
+		}
+	}
+	return nil
+}
+
+// idlTypeIncludesEnforceRange reports whether the IDLType carries an
+// [EnforceRange] extended attribute, either directly or via a one-level typedef.
+func idlTypeIncludesEnforceRange(idlType *IDLType, defs *Definitions) bool {
+	for _, ea := range idlType.ExtAttrs {
+		if ea.Name == "EnforceRange" {
+			return true
+		}
+	}
+	if !idlType.Union && idlType.Base != "" {
+		if def, ok := defs.Unique[semanticName(idlType.Base)]; ok {
+			if td, ok := def.(*Typedef); ok {
+				for _, ea := range td.IDLType.ExtAttrs {
+					if ea.Name == "EnforceRange" {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// validateNullableUnionDict mirrors the no-nullable-union-dict logic in
+// webidl2.js type.js: a nullable union (or a nullable reference to a typedef
+// whose type is a union) that contains a dictionary type is invalid.
+//
+// When a nullable union is detected, the function checks once for a dictionary
+// member and emits at most one error. Otherwise it recurses into subtypes so
+// that inner nullable unions are caught too.
+func validateNullableUnionDict(idlType *IDLType, defs *Definitions) []error {
+	// Determine the "target" union:
+	//   • If idlType is itself a union, it is the target.
+	//   • If idlType is a non-union reference to a typedef whose IDLType is a
+	//     union, that typedef's IDLType is the target.
+	//   • Otherwise there is no target (no union in scope).
+	var target *IDLType
+	if idlType.Union {
+		target = idlType
+	} else if idlType.Base != "" {
+		if def, ok := defs.Unique[semanticName(idlType.Base)]; ok {
+			if td, ok := def.(*Typedef); ok && td.IDLType.Union {
+				target = td.IDLType
+			}
+		}
+	}
+
+	if target != nil && idlType.Nullable {
+		// Nullable union (or nullable typedef-to-union): disallow any dictionary member.
+		if idlTypeIncludesDictionary(target, defs) != nil {
+			return []error{&ValidationError{
+				Rule:    "no-nullable-union-dict",
+				Message: "Nullable union cannot include a dictionary type.",
+			}}
+		}
+		return nil
+	}
+
+	// Not a nullable union / typedef-to-union: recurse into subtypes so that
+	// inner nullable unions are still caught.
+	var errs []error
+	for _, sub := range idlType.Subtypes {
+		errs = append(errs, validateNullableUnionDict(sub, defs)...)
+	}
+	return errs
+}
+
+// ---------------------------------------------------------------------------
+// Cross-overload helpers (no-cross-overload rule)
+// ---------------------------------------------------------------------------
 
 // seedOp records op.Name in statics (for static operations) or nonstatics (for all
 // others). Unnamed operations (getters, setters, …) are silently skipped.
@@ -161,6 +392,10 @@ func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics
 	return errs
 }
 
+// ---------------------------------------------------------------------------
+// Top-level entry point
+// ---------------------------------------------------------------------------
+
 // Validate runs semantic validation over a parsed AST and returns all errors found.
 func Validate(ast []Definition) []error {
 	defs := groupDefinitions(ast)
@@ -173,6 +408,10 @@ func Validate(ast []Definition) []error {
 	errs = append(errs, checkDuplicateNames(&defs)...)
 	return errs
 }
+
+// ---------------------------------------------------------------------------
+// groupDefinitions and related helpers
+// ---------------------------------------------------------------------------
 
 // groupDefinitions builds the Definitions view used by all validation rules.
 func groupDefinitions(all []Definition) Definitions {
@@ -236,6 +475,10 @@ func checkDuplicateNames(defs *Definitions) []error {
 	}
 	return errs
 }
+
+// ---------------------------------------------------------------------------
+// Definition introspection helpers
+// ---------------------------------------------------------------------------
 
 // semanticName strips the leading underscore from a Web IDL escaped identifier.
 // Per the spec, `_Foo` and `Foo` denote the same name.
