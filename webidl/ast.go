@@ -108,6 +108,7 @@ func (*Operation) memberNode()    {}
 func (*Constant) memberNode()     {}
 func (*Constructor) memberNode()  {}
 func (*IterableLike) memberNode() {}
+func (*Field) memberNode()        {} // dictionary members can appear in MergedDef.Members
 
 func (x *Attribute) setExtAttrs(ea []*ExtAttr)    { x.ExtAttrs = ea }
 func (x *Operation) setExtAttrs(ea []*ExtAttr)    { x.ExtAttrs = ea }
