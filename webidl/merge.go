@@ -54,8 +54,9 @@ type MergedDef struct {
 // mixin references, inheritance cycles, etc.) are returned alongside a valid
 // (possibly partial) IR.
 //
-// The four resolution stages run in order:
-//  1. Partition into primaries, partials, and mixin-map (via groupDefinitions).
+// After groupDefinitions partitions the input into primaries and partials, the
+// four resolution stages run in order:
+//  1. Report orphan partials (partials with no matching primary).
 //  2. Fold each primary together with its partials → MergedDef.Members.
 //  3. Apply mixin includes → graft mixin members onto target interfaces.
 //  4. Resolve inheritance chains → MergedDef.InheritedMembers (closest-first).
@@ -66,11 +67,35 @@ func Merge(defs []Definition) (*IR, []error) {
 	}
 
 	grouped := groupDefinitions(defs)
-	var errs []error
 
-	// ------------------------------------------------------------------ //
-	// Stage 1: report orphan partials (no matching primary).             //
-	// ------------------------------------------------------------------ //
+	var errs []error
+	errs = append(errs, reportOrphanPartials(grouped)...) // Stage 1
+	foldPartials(ir, grouped)                             // Stage 2
+	errs = append(errs, applyMixins(ir, defs)...)         // Stage 3
+	errs = append(errs, resolveInheritance(ir)...)        // Stage 4
+
+	return ir, errs
+}
+
+// MergeFiles merges across multiple parsed IDL files. Each element of files is
+// the []Definition slice returned by one Parse call. Cross-file partials, mixin
+// includes, and inheritance chains are resolved exactly as within a single file.
+func MergeFiles(files [][]Definition) (*IR, []error) {
+	var all []Definition
+	for _, f := range files {
+		all = append(all, f...)
+	}
+	return Merge(all)
+}
+
+// ---------------------------------------------------------------------------
+// Stage helpers
+// ---------------------------------------------------------------------------
+
+// reportOrphanPartials returns one error per partial definition that has no
+// matching primary in grouped.Unique.
+func reportOrphanPartials(grouped Definitions) []error {
+	var errs []error
 	for name, partialList := range grouped.Partials {
 		if _, hasPrimary := grouped.Unique[name]; !hasPrimary {
 			for range partialList {
@@ -78,31 +103,31 @@ func Merge(defs []Definition) (*IR, []error) {
 			}
 		}
 	}
+	return errs
+}
 
-	// ------------------------------------------------------------------ //
-	// Stage 2: fold primary + partials into MergedDef.Members.           //
-	// ------------------------------------------------------------------ //
+// foldPartials creates a MergedDef for each primary, accumulating the primary's
+// own members followed by each partial's members (in source order) into
+// MergedDef.Members, and stores the result in ir.defs.
+func foldPartials(ir *IR, grouped Definitions) {
 	for name, primary := range grouped.Unique {
 		md := &MergedDef{Primary: primary}
-
-		// Collect primary's own members.
 		collectMembers(md, primary)
-
-		// Append members from each partial in source order.
 		for _, partial := range grouped.Partials[name] {
 			collectMembers(md, partial)
 		}
-
 		ir.defs[name] = md
 	}
+}
 
-	// ------------------------------------------------------------------ //
-	// Stage 3: apply mixin includes.                                      //
-	// Walk all Includes statements so we can produce errors for unknown  //
-	// targets and unknown/invalid mixins (buildMixinMap silently drops   //
-	// those; we must check them explicitly).                              //
-	// ------------------------------------------------------------------ //
-	applied := make(map[string]bool) // "target\x00mixin" — dedup same pair
+// applyMixins walks every Includes statement in defs and grafts the referenced
+// mixin's members onto the target's MergedDef. Errors are returned for unknown
+// targets, unknown mixins, and includes whose referenced name is not a mixin
+// variant. The same target/mixin pair is never applied twice.
+func applyMixins(ir *IR, defs []Definition) []error {
+	var errs []error
+	applied := make(map[string]bool) // "target\x00mixin" dedup key
+
 	for _, def := range defs {
 		inc, ok := def.(*Includes)
 		if !ok {
@@ -124,31 +149,32 @@ func Merge(defs []Definition) (*IR, []error) {
 			continue
 		}
 
-		// The referenced definition must actually be a mixin variant.
 		iface, isIface := mixinMD.Primary.(*Interface)
 		if !isIface || iface.Variant != IfaceMixin {
 			errs = append(errs, fmt.Errorf("included %q is not an interface mixin", mixinName))
 			continue
 		}
 
-		// Graft mixin's own members onto the target (dedup same pair).
 		key := targetName + "\x00" + mixinName
 		if !applied[key] {
 			applied[key] = true
 			targetMD.Members = append(targetMD.Members, mixinMD.Members...)
 		}
 	}
+	return errs
+}
 
-	// ------------------------------------------------------------------ //
-	// Stage 4: resolve inheritance chains → InheritedMembers.            //
-	// ------------------------------------------------------------------ //
+// resolveInheritance walks the inheritance chain of each Interface and
+// Dictionary in the IR, accumulating ancestor own-members into
+// InheritedMembers (closest ancestor first). Errors are returned for
+// undefined parents and for cycles.
+func resolveInheritance(ir *IR) []error {
+	var errs []error
 	for name, md := range ir.defs {
 		parent := inheritanceOf(md.Primary)
 		if parent == "" {
 			continue
 		}
-
-		// Walk upward, collecting each ancestor's own Members (closest first).
 		visited := map[string]bool{name: true}
 		current := parent
 		for current != "" {
@@ -157,34 +183,20 @@ func Merge(defs []Definition) (*IR, []error) {
 				break
 			}
 			visited[current] = true
-
 			parentMD, ok := ir.defs[current]
 			if !ok {
 				errs = append(errs, fmt.Errorf("%q inherits from %q which is not defined", name, current))
 				break
 			}
-
 			md.InheritedMembers = append(md.InheritedMembers, parentMD.Members...)
 			current = inheritanceOf(parentMD.Primary)
 		}
 	}
-
-	return ir, errs
-}
-
-// MergeFiles merges across multiple parsed IDL files. Each element of files is
-// the []Definition slice returned by one Parse call. Cross-file partials, mixin
-// includes, and inheritance chains are resolved exactly as within a single file.
-func MergeFiles(files [][]Definition) (*IR, []error) {
-	var all []Definition
-	for _, f := range files {
-		all = append(all, f...)
-	}
-	return Merge(all)
+	return errs
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// Low-level helpers
 // ---------------------------------------------------------------------------
 
 // collectMembers appends the own members of def into md.Members.
@@ -204,8 +216,8 @@ func collectMembers(md *MergedDef, def Definition) {
 	}
 }
 
-// inheritanceOf returns the semantic parent name for any definition that
-// supports inheritance (Interface, Dictionary), or "" if none.
+// inheritanceOf returns the semantic parent name for definitions that support
+// inheritance (Interface, Dictionary), or "" if none / not applicable.
 func inheritanceOf(def Definition) string {
 	switch d := def.(type) {
 	case *Interface:
