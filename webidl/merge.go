@@ -18,6 +18,10 @@ func (ir *IR) Len() int {
 }
 
 // Lookup returns the MergedDef for the given name, or nil if not present.
+// Note: mixin definitions (Primary.(*Interface).Variant == IfaceMixin) are
+// present in the IR because their folded members are needed during mixin
+// application. Callers that want only non-mixin definitions should check
+// Primary.(*Interface).Variant != IfaceMixin before using the result.
 func (ir *IR) Lookup(name string) *MergedDef {
 	if ir == nil {
 		return nil
@@ -179,7 +183,7 @@ func resolveInheritance(ir *IR) []error {
 		current := parent
 		for current != "" {
 			if visited[current] {
-				errs = append(errs, fmt.Errorf("inheritance cycle detected involving %q", name))
+				errs = append(errs, fmt.Errorf("inheritance cycle detected involving %q (reached from %q)", current, name))
 				break
 			}
 			visited[current] = true
@@ -210,6 +214,10 @@ func collectMembers(md *MergedDef, def Definition) {
 	case *Namespace:
 		md.Members = append(md.Members, d.Members...)
 	case *Dictionary:
+		// []*Field cannot be spread into []Member with the variadic form
+		// (append(md.Members, d.Members...)) even though *Field implements
+		// Member — Go does not coerce concrete-pointer slices to interface
+		// slices. The element-by-element loop is the correct and necessary form.
 		for _, f := range d.Members {
 			md.Members = append(md.Members, f)
 		}

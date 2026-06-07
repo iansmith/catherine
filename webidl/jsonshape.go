@@ -153,6 +153,24 @@ func memberToJSON(m Member) any {
 			"async":     x.Async,
 		}
 		return out
+	case *Field:
+		// *Field satisfies Member so that dictionary fields can be stored
+		// uniformly in MergedDef.Members. memberToJSON must handle *Field so
+		// that any caller iterating MergedDef.Members through membersToJSON
+		// gets correct JSON output for dictionary primaries.
+		entry := map[string]any{
+			"type":     "field",
+			"name":     x.Name,
+			"extAttrs": extAttrsToJSON(x.ExtAttrs),
+			"idlType":  typeToJSON(x.IDLType),
+			"required": x.Required,
+		}
+		if x.Default != nil {
+			entry["default"] = constValueToJSON(x.Default)
+		} else {
+			entry["default"] = nil
+		}
+		return entry
 	}
 	return nil
 }

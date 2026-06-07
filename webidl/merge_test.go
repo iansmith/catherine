@@ -229,6 +229,31 @@ Ghost includes M;
 	}
 }
 
+// TestMergeMixinIncludesNonMixin verifies that an includes statement referencing
+// a regular (non-mixin) interface produces a merge error rather than silently
+// grafting members. This guards the iface.Variant != IfaceMixin check in
+// applyMixins.
+func TestMergeMixinIncludesNonMixin(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface RegularIface {
+  attribute long x;
+};
+[Exposed=Window]
+interface Target {};
+Target includes RegularIface;
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, mergeErrs := Merge(defs)
+	if len(mergeErrs) == 0 {
+		t.Error("expected a merge error when including a non-mixin interface, got none")
+	}
+}
+
 // TestMergeMixinUnknownMixin verifies that an includes statement referencing a
 // non-existent mixin produces a merge error.
 func TestMergeMixinUnknownMixin(t *testing.T) {
@@ -332,6 +357,26 @@ func TestMergeInheritanceCycle(t *testing.T) {
 	}
 	if len(mergeErrs) == 0 {
 		t.Error("expected a merge error for inheritance cycle, got none")
+	}
+}
+
+// TestMergeInheritanceCycleDeepChain verifies that a cycle nested in a deeper
+// chain (A:B, B:C, C:B) is detected without hanging. A is outside the B↔C
+// cycle, so the error message must reference the cycle nodes (B or C), not A.
+func TestMergeInheritanceCycleDeepChain(t *testing.T) {
+	t.Parallel()
+	// Synthetic AST: A inherits B, B inherits C, C inherits B (cycle is B:C:B).
+	a := &Interface{Name: "A", Inheritance: "B", Variant: IfaceRegular}
+	b := &Interface{Name: "B", Inheritance: "C", Variant: IfaceRegular}
+	c := &Interface{Name: "C", Inheritance: "B", Variant: IfaceRegular}
+	defs := []Definition{a, b, c}
+
+	ir, mergeErrs := Merge(defs)
+	if ir == nil {
+		t.Fatal("Merge returned nil IR on deep-cycle input")
+	}
+	if len(mergeErrs) == 0 {
+		t.Error("expected merge errors for inheritance cycle, got none")
 	}
 }
 
