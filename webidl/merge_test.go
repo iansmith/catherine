@@ -140,6 +140,44 @@ partial interface Ghost {
 // Mixin application
 // ---------------------------------------------------------------------------
 
+// TestMergeMixinExtAttrPropagation verifies that 'X includes M' grafts M's
+// ExtAttrs onto X's merged ExtAttr list, not only M's members.
+func TestMergeMixinExtAttrPropagation(t *testing.T) {
+	t.Parallel()
+	src := `
+[SecureContext]
+interface mixin M {
+  attribute long mx;
+};
+[Exposed=Window]
+interface X {};
+X includes M;
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("X")
+	if md == nil {
+		t.Fatal("Lookup(\"X\") returned nil")
+	}
+	// X contributes [Exposed=Window] (1); M contributes [SecureContext] (1) via includes.
+	if got := len(md.ExtAttrs); got != 2 {
+		t.Fatalf("expected 2 ExtAttrs after mixin include, got %d", got)
+	}
+	names := map[string]bool{}
+	for _, ea := range md.ExtAttrs {
+		names[ea.Name] = true
+	}
+	if !names["Exposed"] || !names["SecureContext"] {
+		t.Errorf("missing expected ExtAttrs: got names %v", names)
+	}
+}
+
 // TestMergeMixinApplication verifies that 'X includes M' grafts M's members
 // onto X's merged member list.
 func TestMergeMixinApplication(t *testing.T) {

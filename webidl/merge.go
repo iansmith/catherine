@@ -170,6 +170,7 @@ func applyMixins(ir *IR, defs []Definition) []error {
 		if !applied[key] {
 			applied[key] = true
 			targetMD.Members = append(targetMD.Members, mixinMD.Members...)
+			targetMD.ExtAttrs = append(targetMD.ExtAttrs, mixinMD.ExtAttrs...)
 		}
 	}
 	return errs
@@ -221,6 +222,8 @@ func resolveInheritance(ir *IR) []error {
 // `case *Interface, *Dictionary, *Namespace:` clause: Go would then bind d to
 // the Definition interface, which has no ExtAttrs field. Collapsing via a
 // Definition-level getter would also defeat the type filter above.
+//
+// Must stay in sync with collectMembers, which switches over the same type set.
 func collectExtAttrs(md *MergedDef, def Definition) {
 	switch d := def.(type) {
 	case *Interface:
