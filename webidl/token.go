@@ -40,8 +40,9 @@ func (k TokenKind) String() string {
 
 // Token is a single lexical element.
 type Token struct {
-	Kind  TokenKind
-	Value string
-	Line  int // 1-based line number where the token begins
-	Index int // token index in the stream (0-based)
+	Kind   TokenKind
+	Value  string
+	Line   int // 1-based line number where the token begins
+	Index  int // token index in the stream (0-based)
+	Offset int // byte offset of Value in the source string (set by Tokenize)
 }
