@@ -1,15 +1,38 @@
 package webidl
 
+import "strings"
+
 // PrintIDL reconstructs the original IDL source string from a definition list
 // and the original source. Round-trips are byte-for-byte identical: all
 // whitespace, comments, and formatting are preserved exactly.
 //
-// The defs must have been produced by Parse(src) with Token.Offset values set
-// by Tokenize. The reconstruction works by filling inter-token gaps — the
-// trivia regions that Tokenize currently discards — from src using each
-// token's byte offset.
+// The reconstruction re-tokenizes src to recover token byte offsets, then fills
+// each inter-token gap (whitespace, comments) directly from src. The defs
+// parameter is unused in this implementation but is retained in the signature
+// for future modified-AST printing.
 //
-// TODO: implement using Token.Offset once Tokenize populates it.
+// If src cannot be tokenized (e.g. an unterminated block comment), PrintIDL
+// returns src unchanged as a best-effort fallback.
 func PrintIDL(src string, defs []Definition) string {
-	return ""
+	tokens, err := Tokenize(src)
+	if err != nil {
+		return src
+	}
+	var b strings.Builder
+	b.Grow(len(src))
+	pos := 0
+	for _, tok := range tokens {
+		if tok.Kind == TokEOF {
+			break
+		}
+		// Copy the trivia (whitespace / comments) preceding this token, then
+		// the token itself. Tokens are in source order, so tok.Offset >= pos
+		// and the slice is empty when there is no intervening trivia.
+		b.WriteString(src[pos:tok.Offset])
+		b.WriteString(tok.Value)
+		pos = tok.Offset + len(tok.Value)
+	}
+	// Copy any trailing trivia after the last real token.
+	b.WriteString(src[pos:])
+	return b.String()
 }

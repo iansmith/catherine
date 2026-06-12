@@ -139,7 +139,7 @@ func Tokenize(src string) ([]Token, error) {
 			return nil, err
 		}
 	}
-	t.tokens = append(t.tokens, Token{Kind: TokEOF, Value: "", Line: t.line, Index: t.nextIndex})
+	t.tokens = append(t.tokens, Token{Kind: TokEOF, Value: "", Line: t.line, Index: t.nextIndex, Offset: t.pos})
 	return t.tokens, nil
 }
 
@@ -152,7 +152,7 @@ type tokenState struct {
 }
 
 func (t *tokenState) emit(kind TokenKind, value string) {
-	t.tokens = append(t.tokens, Token{Kind: kind, Value: value, Line: t.line, Index: t.nextIndex})
+	t.tokens = append(t.tokens, Token{Kind: kind, Value: value, Line: t.line, Index: t.nextIndex, Offset: t.pos})
 	t.nextIndex++
 }
 

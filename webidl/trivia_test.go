@@ -239,6 +239,117 @@ func TestRoundTripDictionary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Additional adversary gap tests (findings 1–5)
+// ---------------------------------------------------------------------------
+
+// TestTokenOffsetEOFBoundary verifies that the synthetic EOF token's Offset
+// equals len(src) — marking the end of the source exactly.
+func TestTokenOffsetEOFBoundary(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};"
+	tokens, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	eof := tokens[len(tokens)-1]
+	if eof.Kind != TokEOF {
+		t.Fatalf("last token is not TokEOF: %v", eof.Kind)
+	}
+	if eof.Offset != len(src) {
+		t.Errorf("EOF.Offset=%d, want %d (=len(src))", eof.Offset, len(src))
+	}
+}
+
+// TestTokenOffsetSingleTokenLeadingSpace verifies that a single meaningful
+// token preceded only by whitespace has an Offset equal to the whitespace
+// byte count — not 0.
+func TestTokenOffsetSingleTokenLeadingSpace(t *testing.T) {
+	t.Parallel()
+	src := "   Foo"
+	tokens, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	if tokens[0].Value != "Foo" {
+		t.Fatalf("expected first token 'Foo', got %q", tokens[0].Value)
+	}
+	if tokens[0].Offset != 3 {
+		t.Errorf("expected 'Foo'.Offset=3 (three leading spaces), got %d", tokens[0].Offset)
+	}
+}
+
+// TestTokenOffsetMultipleOccurrences verifies that two tokens with the same
+// value that appear at different positions in the source have distinct Offsets
+// that each correctly point to their respective byte positions.
+func TestTokenOffsetMultipleOccurrences(t *testing.T) {
+	t.Parallel()
+	// Two interfaces each with an attribute named "x" — two "x" tokens at
+	// different byte offsets.
+	src := "[Exposed=Window]\ninterface A {\n  attribute long x;\n};\n" +
+		"[Exposed=Window]\ninterface B {\n  attribute long x;\n};\n"
+	tokens, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	var xOffsets []int
+	for _, tok := range tokens {
+		if tok.Value == "x" {
+			xOffsets = append(xOffsets, tok.Offset)
+		}
+	}
+	if len(xOffsets) != 2 {
+		t.Fatalf("expected 2 'x' tokens, got %d", len(xOffsets))
+	}
+	if xOffsets[0] == xOffsets[1] {
+		t.Errorf("both 'x' tokens have the same Offset=%d; expected distinct offsets", xOffsets[0])
+	}
+	// Each offset must actually point to 'x' in src.
+	for _, off := range xOffsets {
+		if off < 0 || off >= len(src) || src[off] != 'x' {
+			t.Errorf("offset %d does not point to 'x' in source (src[%d]=%q)", off, off, string(src[off]))
+		}
+	}
+}
+
+// TestRoundTripTypedef verifies that a typedef definition round-trips
+// byte-for-byte — exercising a definition kind not covered by the interface
+// and dictionary tests above.
+func TestRoundTripTypedef(t *testing.T) {
+	t.Parallel()
+	src := "typedef unsigned long long DOMTimeStamp;\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := PrintIDL(src, defs)
+	if got != src {
+		t.Errorf("typedef round-trip failed\ngot:  %q\nwant: %q", got, src)
+	}
+}
+
+// TestTokenOffsetUTF8InComment verifies that multi-byte UTF-8 sequences in a
+// comment do not shift the Offset of subsequent tokens. A byte-naive
+// implementation that counts runes instead of bytes would place "interface" at
+// offset 8 instead of 9 for the source below.
+//
+// "// café\n" = 9 bytes: "//(2) (1)café(5: c+a+f+é[0xC3,0xA9])\n(1)"
+func TestTokenOffsetUTF8InComment(t *testing.T) {
+	t.Parallel()
+	src := "// café\ninterface Foo {};"
+	tokens, err := Tokenize(src)
+	if err != nil {
+		t.Fatalf("tokenize: %v", err)
+	}
+	if tokens[0].Value != "interface" {
+		t.Fatalf("expected first token 'interface', got %q", tokens[0].Value)
+	}
+	const wantOffset = 9 // "// café\n" is exactly 9 bytes in UTF-8
+	if tokens[0].Offset != wantOffset {
+		t.Errorf("expected 'interface'.Offset=%d (UTF-8 byte offset), got %d", wantOffset, tokens[0].Offset)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Error-path cases (PrintIDL with nil/unparseable input)
 // ---------------------------------------------------------------------------
 
