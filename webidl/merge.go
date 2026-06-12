@@ -47,6 +47,11 @@ type MergedDef struct {
 	// (in includes-statement order).
 	Members []Member
 
+	// ExtAttrs holds the accumulated extended attributes from the primary
+	// definition followed by each partial's extended attributes in source order.
+	// Extended attributes are not deduplicated.
+	ExtAttrs []*ExtAttr
+
 	// InheritedMembers holds members contributed by parent interfaces,
 	// closest ancestor first. Only populated for Interface and Dictionary
 	// definitions that have a non-empty Inheritance field.
@@ -112,13 +117,15 @@ func reportOrphanPartials(grouped Definitions) []error {
 
 // foldPartials creates a MergedDef for each primary, accumulating the primary's
 // own members followed by each partial's members (in source order) into
-// MergedDef.Members, and stores the result in ir.defs.
+// MergedDef.Members, and its extended attributes into MergedDef.ExtAttrs.
 func foldPartials(ir *IR, grouped Definitions) {
 	for name, primary := range grouped.Unique {
 		md := &MergedDef{Primary: primary}
 		collectMembers(md, primary)
+		collectExtAttrs(md, primary)
 		for _, partial := range grouped.Partials[name] {
 			collectMembers(md, partial)
+			collectExtAttrs(md, partial)
 		}
 		ir.defs[name] = md
 	}
@@ -202,6 +209,28 @@ func resolveInheritance(ir *IR) []error {
 // ---------------------------------------------------------------------------
 // Low-level helpers
 // ---------------------------------------------------------------------------
+
+// collectExtAttrs appends the extended attributes of def into md.ExtAttrs.
+//
+// Only Interface, Dictionary, and Namespace are matched: those are the three
+// definition types that can appear as partials. Enum, Typedef, Includes, and
+// CallbackFunction also carry an ExtAttrs field but never participate in
+// partial folding, so they are intentionally skipped.
+//
+// The per-type arms look duplicated but cannot be merged into a single
+// `case *Interface, *Dictionary, *Namespace:` clause: Go would then bind d to
+// the Definition interface, which has no ExtAttrs field. Collapsing via a
+// Definition-level getter would also defeat the type filter above.
+func collectExtAttrs(md *MergedDef, def Definition) {
+	switch d := def.(type) {
+	case *Interface:
+		md.ExtAttrs = append(md.ExtAttrs, d.ExtAttrs...)
+	case *Dictionary:
+		md.ExtAttrs = append(md.ExtAttrs, d.ExtAttrs...)
+	case *Namespace:
+		md.ExtAttrs = append(md.ExtAttrs, d.ExtAttrs...)
+	}
+}
 
 // collectMembers appends the own members of def into md.Members.
 // Handles the three definition types that can carry members: Interface,

@@ -14,3 +14,6 @@ in_progress = "status:in-progress"
 backend = "claude"
 effort  = "high"   # low | medium | high | max | ultra
 fix     = false    # true: commit fixable findings after code-review completes
+
+[workflow]
+skip_confirm = true

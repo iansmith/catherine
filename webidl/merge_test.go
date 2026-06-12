@@ -614,11 +614,11 @@ func TestMergeExtAttrNamespacePartial(t *testing.T) {
 	t.Parallel()
 	src := `
 namespace NS {
-  attribute long a;
+  readonly attribute long a;
 };
 [Exposed=Window]
 partial namespace NS {
-  attribute long b;
+  readonly attribute long b;
 };
 `
 	defs, err := Parse(src)
