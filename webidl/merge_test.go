@@ -637,3 +637,177 @@ partial namespace NS {
 		t.Errorf("expected 1 ExtAttr from partial namespace, got %d", got)
 	}
 }
+
+// TestMergeExtAttrMultipleOnSingleDef verifies that multiple ExtAttrs on one
+// definition are all preserved — not truncated to the first.
+func TestMergeExtAttrMultipleOnSingleDef(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window, SecureContext]
+interface Foo {
+  attribute long a;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 2 {
+		t.Fatalf("expected 2 ExtAttrs from single definition, got %d", got)
+	}
+	if md.ExtAttrs[0].Name != "Exposed" || md.ExtAttrs[1].Name != "SecureContext" {
+		t.Errorf("wrong ExtAttr names: got %q, %q", md.ExtAttrs[0].Name, md.ExtAttrs[1].Name)
+	}
+}
+
+// TestMergeExtAttrPreservesRHS verifies that the full ExtAttr is preserved
+// (not just the Name field) — RHS with identifier value must survive the fold.
+func TestMergeExtAttrPreservesRHS(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Foo {
+  attribute long a;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	if len(md.ExtAttrs) == 0 {
+		t.Fatal("expected at least 1 ExtAttr")
+	}
+	ea := md.ExtAttrs[0]
+	if ea.RHS == nil {
+		t.Fatal("ExtAttr[Exposed=Window] RHS is nil — full ExtAttr not preserved")
+	}
+	if ea.RHS.Value != "Window" {
+		t.Errorf("expected RHS.Value %q, got %q", "Window", ea.RHS.Value)
+	}
+}
+
+// TestMergeExtAttrNoDuplicateRemoval verifies that ExtAttrs with the same name
+// on different definitions are both kept (no deduplication).
+func TestMergeExtAttrNoDuplicateRemoval(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Foo {
+  attribute long a;
+};
+[Exposed=Worker]
+partial interface Foo {
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	// Both [Exposed=Window] and [Exposed=Worker] must be present — no dedup.
+	if got := len(md.ExtAttrs); got != 2 {
+		t.Errorf("expected 2 ExtAttrs (no deduplication), got %d", got)
+	}
+}
+
+// TestMergeExtAttrDictionaryBothContribute verifies accumulation when both the
+// primary dictionary and its partial carry ExtAttrs.
+func TestMergeExtAttrDictionaryBothContribute(t *testing.T) {
+	t.Parallel()
+	src := `
+[Clamp]
+dictionary D {
+  long a;
+};
+[SecureContext]
+partial dictionary D {
+  long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("D")
+	if md == nil {
+		t.Fatal("Lookup(\"D\") returned nil")
+	}
+	// Primary contributes [Clamp], partial contributes [SecureContext].
+	if got := len(md.ExtAttrs); got != 2 {
+		t.Fatalf("expected 2 ExtAttrs from primary+partial dictionary, got %d", got)
+	}
+	if md.ExtAttrs[0].Name != "Clamp" || md.ExtAttrs[1].Name != "SecureContext" {
+		t.Errorf("wrong order: got %q, %q", md.ExtAttrs[0].Name, md.ExtAttrs[1].Name)
+	}
+}
+
+// TestMergeExtAttrPrimaryNotMutated verifies that merging does not mutate the
+// original primary Definition's ExtAttrs slice — the primary must be unchanged
+// after Merge returns.
+func TestMergeExtAttrPrimaryNotMutated(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Foo {
+  attribute long a;
+};
+[SecureContext]
+partial interface Foo {
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// Record the original primary ExtAttr count before merge.
+	var primaryBefore int
+	for _, d := range defs {
+		if iface, ok := d.(*Interface); ok && !iface.Partial && iface.Name == "Foo" {
+			primaryBefore = len(iface.ExtAttrs)
+		}
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	// MergedDef.ExtAttrs should have 2 (primary + partial), but the primary
+	// Definition itself must still have only 1.
+	iface := md.Primary.(*Interface)
+	if got := len(iface.ExtAttrs); got != primaryBefore {
+		t.Errorf("primary Definition.ExtAttrs was mutated: had %d before merge, has %d after",
+			primaryBefore, got)
+	}
+}
