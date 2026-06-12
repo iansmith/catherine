@@ -100,12 +100,15 @@ func TestPrintIDLNoTrailingNewline(t *testing.T) {
 // TestTokenOffsetMatchesSource verifies that for every non-EOF token, the
 // byte at src[token.Offset] matches the first byte of token.Value.
 // This is a universal invariant — any offset mis-assignment breaks it.
+// The corpus intentionally includes a TokString token ("red") to cover the
+// string-literal emit path in addition to keywords and punctuation.
 func TestTokenOffsetMatchesSource(t *testing.T) {
 	t.Parallel()
 	src := `[Exposed=Window]
 interface Foo {
   attribute long x;
 };
+enum Color { "red" };
 `
 	tokens, err := Tokenize(src)
 	if err != nil {

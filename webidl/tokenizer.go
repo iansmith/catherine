@@ -151,6 +151,9 @@ type tokenState struct {
 	nextIndex int
 }
 
+// emit appends a token to the stream. Callers must invoke emit before
+// advancing t.pos past the token so that Offset captures the token's start
+// byte in the source.
 func (t *tokenState) emit(kind TokenKind, value string) {
 	t.tokens = append(t.tokens, Token{Kind: kind, Value: value, Line: t.line, Index: t.nextIndex, Offset: t.pos})
 	t.nextIndex++
