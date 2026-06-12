@@ -436,3 +436,204 @@ func TestMergeFilesEmpty(t *testing.T) {
 		t.Errorf("expected empty IR, got %d definitions", ir.Len())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ExtAttr merging from partials (CATH-17)
+// ---------------------------------------------------------------------------
+
+// TestMergeExtAttrPrimaryNoPartials verifies that a primary's own ExtAttrs are
+// copied into MergedDef.ExtAttrs even when no partials exist.
+func TestMergeExtAttrPrimaryNoPartials(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Foo {
+  attribute long a;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 1 {
+		t.Errorf("expected 1 ExtAttr from primary, got %d", got)
+	}
+	if md.ExtAttrs[0].Name != "Exposed" {
+		t.Errorf("expected ExtAttr name %q, got %q", "Exposed", md.ExtAttrs[0].Name)
+	}
+}
+
+// TestMergeExtAttrPartialOnlyPrimaryNone verifies that ExtAttrs from a partial
+// appear in MergedDef.ExtAttrs even when the primary has no ExtAttrs.
+func TestMergeExtAttrPartialOnlyPrimaryNone(t *testing.T) {
+	t.Parallel()
+	src := `
+interface Foo {
+  attribute long a;
+};
+[SecureContext]
+partial interface Foo {
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 1 {
+		t.Errorf("expected 1 ExtAttr from partial, got %d", got)
+	}
+	if md.ExtAttrs[0].Name != "SecureContext" {
+		t.Errorf("expected ExtAttr name %q, got %q", "SecureContext", md.ExtAttrs[0].Name)
+	}
+}
+
+// TestMergeExtAttrBothEmpty verifies that when neither primary nor any partial
+// carries ExtAttrs, MergedDef.ExtAttrs is empty (not nil-panicking).
+func TestMergeExtAttrBothEmpty(t *testing.T) {
+	t.Parallel()
+	src := `
+interface Foo {
+  attribute long a;
+};
+partial interface Foo {
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 0 {
+		t.Errorf("expected 0 ExtAttrs, got %d", got)
+	}
+}
+
+// TestMergeExtAttrSourceOrder verifies that ExtAttrs are accumulated in source
+// order: primary first, then each partial in declaration order.
+func TestMergeExtAttrSourceOrder(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Foo {
+  attribute long a;
+};
+[SecureContext]
+partial interface Foo {
+  attribute long b;
+};
+[LegacyUnenumerableNamedProperties]
+partial interface Foo {
+  attribute long c;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Foo")
+	if md == nil {
+		t.Fatal("Lookup(\"Foo\") returned nil")
+	}
+	// 1 from primary + 1 from each partial = 3
+	if got := len(md.ExtAttrs); got != 3 {
+		t.Fatalf("expected 3 ExtAttrs, got %d", got)
+	}
+	want := []string{"Exposed", "SecureContext", "LegacyUnenumerableNamedProperties"}
+	for i, name := range want {
+		if md.ExtAttrs[i].Name != name {
+			t.Errorf("ExtAttrs[%d]: expected %q, got %q", i, name, md.ExtAttrs[i].Name)
+		}
+	}
+}
+
+// TestMergeExtAttrDictionaryPartial verifies that ExtAttrs from partial
+// dictionaries are merged into MergedDef.ExtAttrs.
+func TestMergeExtAttrDictionaryPartial(t *testing.T) {
+	t.Parallel()
+	src := `
+dictionary D {
+  long a;
+};
+[SecureContext]
+partial dictionary D {
+  long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("D")
+	if md == nil {
+		t.Fatal("Lookup(\"D\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 1 {
+		t.Errorf("expected 1 ExtAttr from partial dictionary, got %d", got)
+	}
+	if md.ExtAttrs[0].Name != "SecureContext" {
+		t.Errorf("expected %q, got %q", "SecureContext", md.ExtAttrs[0].Name)
+	}
+}
+
+// TestMergeExtAttrNamespacePartial verifies that ExtAttrs from partial
+// namespaces are merged into MergedDef.ExtAttrs.
+func TestMergeExtAttrNamespacePartial(t *testing.T) {
+	t.Parallel()
+	src := `
+namespace NS {
+  attribute long a;
+};
+[Exposed=Window]
+partial namespace NS {
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("NS")
+	if md == nil {
+		t.Fatal("Lookup(\"NS\") returned nil")
+	}
+	if got := len(md.ExtAttrs); got != 1 {
+		t.Errorf("expected 1 ExtAttr from partial namespace, got %d", got)
+	}
+}
