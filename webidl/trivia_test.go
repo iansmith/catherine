@@ -239,6 +239,37 @@ func TestRoundTripDictionary(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Error-path cases (PrintIDL with nil/unparseable input)
+// ---------------------------------------------------------------------------
+
+// TestPrintIDLNilDefinitions verifies that PrintIDL returns the original source
+// when defs is nil — i.e. when the caller had a parse error and passes nil.
+// The entire source is treated as trivia and must be preserved verbatim.
+func TestPrintIDLNilDefinitions(t *testing.T) {
+	t.Parallel()
+	src := "// A comment\n[Exposed=Window]\ninterface Foo {};\n"
+	got := PrintIDL(src, nil)
+	if got != src {
+		t.Errorf("nil-defs PrintIDL failed\ngot:  %q\nwant: %q", got, src)
+	}
+}
+
+// TestPrintIDLMalformedSource verifies that PrintIDL reproduces the source
+// bytes for lexically valid but structurally incomplete IDL — it must not
+// panic or return empty string just because the AST is missing.
+// (The tokenizer can still lex an incomplete interface; PrintIDL should
+// reconstruct verbatim using the token offsets.)
+func TestPrintIDLMalformedSource(t *testing.T) {
+	t.Parallel()
+	// Lexically valid tokens but an incomplete interface definition.
+	src := "interface Foo { attribute long"
+	got := PrintIDL(src, nil)
+	if got != src {
+		t.Errorf("malformed-source PrintIDL failed\ngot:  %q\nwant: %q", got, src)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Happy-path cases
 // ---------------------------------------------------------------------------
 
