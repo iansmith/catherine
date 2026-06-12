@@ -335,7 +335,12 @@ func TestRoundTripTypedef(t *testing.T) {
 // implementation that counts runes instead of bytes would place "interface" at
 // offset 8 instead of 9 for the source below.
 //
-// "// café\n" = 9 bytes: "//(2) (1)café(5: c+a+f+é[0xC3,0xA9])\n(1)"
+// "// café\n" is 9 bytes:
+//
+//	"//"   = 2 bytes (ASCII)
+//	" "    = 1 byte  (ASCII space)
+//	"café" = 5 bytes (c=1, a=1, f=1, é=2 as [0xC3,0xA9])
+//	"\n"   = 1 byte
 func TestTokenOffsetUTF8InComment(t *testing.T) {
 	t.Parallel()
 	src := "// café\ninterface Foo {};"
@@ -353,12 +358,11 @@ func TestTokenOffsetUTF8InComment(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Error-path cases (PrintIDL with nil/unparseable input)
+// Nil / edge-input cases
 // ---------------------------------------------------------------------------
 
-// TestPrintIDLNilDefinitions verifies that PrintIDL returns the original source
-// when defs is nil — i.e. when the caller had a parse error and passes nil.
-// The entire source is treated as trivia and must be preserved verbatim.
+// TestPrintIDLNilDefinitions verifies that PrintIDL tolerates a nil defs slice.
+// defs is currently unused, so nil must not panic or produce empty output.
 func TestPrintIDLNilDefinitions(t *testing.T) {
 	t.Parallel()
 	src := "// A comment\n[Exposed=Window]\ninterface Foo {};\n"
