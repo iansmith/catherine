@@ -407,12 +407,14 @@ func (p *parser) parseContainerBody(v InterfaceVariant, partial bool) *Interface
 			}
 			return iface
 		}
+		firstTok := p.current()
 		ea := p.parseExtAttrs()
 		m := p.parseInterfaceMember(v)
 		if m == nil {
 			p.errorf("Unknown member")
 		}
 		attachMemberExtAttrs(m, ea)
+		m.setSpan(spanFrom(firstTok))
 		iface.Members = append(iface.Members, m)
 	}
 }
@@ -537,6 +539,7 @@ func (p *parser) parseDictionary(partial *Token) *Dictionary {
 			}
 			return d
 		}
+		firstTok := p.current()
 		ea := p.parseExtAttrs()
 		f := p.parseField()
 		if f == nil {
@@ -546,6 +549,7 @@ func (p *parser) parseDictionary(partial *Token) *Dictionary {
 			ea = []*ExtAttr{}
 		}
 		f.ExtAttrs = ea
+		f.Span = spanFrom(firstTok)
 		d.Members = append(d.Members, f)
 	}
 }
@@ -692,6 +696,7 @@ func (p *parser) parseNamespace(partial *Token) *Namespace {
 			}
 			return ns
 		}
+		firstTok := p.current()
 		ea := p.parseExtAttrs()
 		var m Member
 		if x := p.parseAttribute(nil, true, true); x != nil {
@@ -704,6 +709,7 @@ func (p *parser) parseNamespace(partial *Token) *Namespace {
 			p.errorf("Unknown member")
 		}
 		attachMemberExtAttrs(m, ea)
+		m.setSpan(spanFrom(firstTok))
 		ns.Members = append(ns.Members, m)
 	}
 }

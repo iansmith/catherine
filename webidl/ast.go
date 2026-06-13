@@ -1,13 +1,41 @@
 package webidl
 
+// Span records the source location of the first token of a Definition or Member
+// node. Line is 1-based; Offset is the byte offset of that token in the source
+// string (mirrors Token.Line and Token.Offset set by Tokenize).
+//
+// When a definition or member is preceded by extended attributes, Span points to
+// the opening '[' of those attributes — the outermost syntactic extent of the
+// node. When there are no extended attributes, Span points to the keyword or
+// identifier that opens the node (e.g. "interface", "attribute", "const").
+//
+// A zero Span (both fields zero) means no source location was recorded.
+type Span struct {
+	Line   int // 1-based line number of the first token
+	Offset int // byte offset of the first token in the source string
+}
+
+// spanFrom constructs a Span from a token's position fields.
+func spanFrom(t *Token) Span {
+	return Span{Line: t.Line, Offset: t.Offset}
+}
+
+// spanSetter is satisfied by every Definition and Member type.
+// It lets parse loops attach a Span without a type switch.
+type spanSetter interface {
+	setSpan(Span)
+}
+
 // Definition is any top-level IDL definition.
 //
 // Concrete types: *Interface, *Dictionary, *Enum, *Typedef, *Includes,
-// *Namespace, *CallbackFunction. All definitions implement extAttrSetter so
-// the parser can attach extended attributes generically.
+// *Namespace, *CallbackFunction. All definitions implement extAttrSetter and
+// spanSetter so the parser can attach extended attributes and source spans
+// generically.
 type Definition interface {
 	definitionNode()
 	extAttrSetter
+	spanSetter
 }
 
 type extAttrSetter interface {
@@ -30,6 +58,21 @@ func (x *Includes) setExtAttrs(ea []*ExtAttr)         { x.ExtAttrs = ea }
 func (x *Namespace) setExtAttrs(ea []*ExtAttr)        { x.ExtAttrs = ea }
 func (x *CallbackFunction) setExtAttrs(ea []*ExtAttr) { x.ExtAttrs = ea }
 
+func (x *Interface) setSpan(sp Span)        { x.Span = sp }
+func (x *Dictionary) setSpan(sp Span)       { x.Span = sp }
+func (x *Enum) setSpan(sp Span)             { x.Span = sp }
+func (x *Typedef) setSpan(sp Span)          { x.Span = sp }
+func (x *Includes) setSpan(sp Span)         { x.Span = sp }
+func (x *Namespace) setSpan(sp Span)        { x.Span = sp }
+func (x *CallbackFunction) setSpan(sp Span) { x.Span = sp }
+
+func (x *Attribute) setSpan(sp Span)    { x.Span = sp }
+func (x *Operation) setSpan(sp Span)    { x.Span = sp }
+func (x *Constant) setSpan(sp Span)     { x.Span = sp }
+func (x *Constructor) setSpan(sp Span)  { x.Span = sp }
+func (x *IterableLike) setSpan(sp Span) { x.Span = sp }
+func (x *Field) setSpan(sp Span)        { x.Span = sp }
+
 // Interface covers interface, interface mixin, and callback interface.
 // The Variant field distinguishes them.
 type Interface struct {
@@ -39,6 +82,7 @@ type Interface struct {
 	Members     []Member
 	ExtAttrs    []*ExtAttr
 	Partial     bool
+	Span        Span
 }
 
 type InterfaceVariant int
@@ -56,6 +100,7 @@ type Dictionary struct {
 	Members     []*Field
 	ExtAttrs    []*ExtAttr
 	Partial     bool
+	Span        Span
 }
 
 // Enum is `enum Name { "v1", "v2", ... }`.
@@ -63,6 +108,7 @@ type Enum struct {
 	Name     string
 	Values   []string
 	ExtAttrs []*ExtAttr
+	Span     Span
 }
 
 // Typedef is `typedef T Name;`.
@@ -70,6 +116,7 @@ type Typedef struct {
 	Name     string
 	IDLType  *IDLType
 	ExtAttrs []*ExtAttr
+	Span     Span
 }
 
 // Includes is `Target includes Mixin;`.
@@ -77,6 +124,7 @@ type Includes struct {
 	Target   string
 	Includes string
 	ExtAttrs []*ExtAttr
+	Span     Span
 }
 
 // Namespace is `namespace Name { ... }`.
@@ -85,6 +133,7 @@ type Namespace struct {
 	Members  []Member
 	ExtAttrs []*ExtAttr
 	Partial  bool
+	Span     Span
 }
 
 // CallbackFunction is `callback Name = ReturnType (Args...);`.
@@ -93,12 +142,16 @@ type CallbackFunction struct {
 	ReturnType *IDLType
 	Arguments  []*Argument
 	ExtAttrs   []*ExtAttr
+	Span       Span
 }
 
 // Member is anything that may appear inside an interface / namespace /
-// callback-interface body.
+// callback-interface body. All members implement spanSetter so the parser can
+// attach source spans generically. (Note: *Field is a Member but does not
+// implement extAttrSetter, so Member cannot embed it; see attachMemberExtAttrs.)
 type Member interface {
 	memberNode()
+	spanSetter
 }
 
 // Member is any value that may appear inside an interface/namespace body.
@@ -123,6 +176,7 @@ type Attribute struct {
 	ExtAttrs []*ExtAttr
 	Special  string // "", "static", "stringifier", "inherit"
 	Readonly bool
+	Span     Span
 }
 
 // Operation covers regular, static, getter/setter/deleter, and stringifier ops.
@@ -132,6 +186,7 @@ type Operation struct {
 	Arguments  []*Argument
 	ExtAttrs   []*ExtAttr
 	Special    string // "", "static", "stringifier", "getter", "setter", "deleter"
+	Span       Span
 }
 
 // Constant is `const T NAME = value;`.
@@ -140,12 +195,14 @@ type Constant struct {
 	IDLType  *IDLType
 	Value    *ConstValue
 	ExtAttrs []*ExtAttr
+	Span     Span
 }
 
 // Constructor is `constructor(args);`.
 type Constructor struct {
 	Arguments []*Argument
 	ExtAttrs  []*ExtAttr
+	Span      Span
 }
 
 // IterableLike covers iterable, async_iterable, maplike, and setlike.
@@ -156,6 +213,7 @@ type IterableLike struct {
 	ExtAttrs  []*ExtAttr
 	Readonly  bool
 	Async     bool
+	Span      Span
 }
 
 type IterableKind int
@@ -188,6 +246,7 @@ type Field struct {
 	Default  *ConstValue
 	ExtAttrs []*ExtAttr
 	Required bool
+	Span     Span
 }
 
 // Argument is one item in an operation/callback argument list.

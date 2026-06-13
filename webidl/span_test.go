@@ -294,12 +294,13 @@ func TestSpanMemberAttributeWithExtAttr(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *Attribute, got %T", iface.Members[0])
 	}
-	// '[LegacyUnforgeable]' is the first token on line 3, at offset 2 (two spaces).
+	// '[LegacyUnforgeable]' is the first token on line 3.
+	// Absolute byte offset: "[Exposed=Window]\n" (17) + "interface Foo {\n" (16) + 2 indent = 35.
 	if attr.Span.Line != 3 {
 		t.Errorf("Span.Line = %d, want 3 (line with [LegacyUnforgeable])", attr.Span.Line)
 	}
-	if attr.Span.Offset != 2 {
-		t.Errorf("Span.Offset = %d, want 2 (the opening '[')", attr.Span.Offset)
+	if attr.Span.Offset != 35 {
+		t.Errorf("Span.Offset = %d, want 35 (the opening '[')", attr.Span.Offset)
 	}
 }
 
@@ -349,12 +350,13 @@ func TestSpanOperationSpecialKeyword(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *Operation, got %T", iface.Members[0])
 	}
-	// "getter" is the first token on line 3, at offset 2.
+	// "getter" is the first token on line 3.
+	// Absolute byte offset: "[Exposed=Window]\n" (17) + "interface Foo {\n" (16) + 2 indent = 35.
 	if op.Span.Line != 3 {
 		t.Errorf("Operation.Span.Line = %d, want 3", op.Span.Line)
 	}
-	if op.Span.Offset != 2 {
-		t.Errorf("Operation.Span.Offset = %d, want 2 (start of 'getter')", op.Span.Offset)
+	if op.Span.Offset != 35 {
+		t.Errorf("Operation.Span.Offset = %d, want 35 (start of 'getter')", op.Span.Offset)
 	}
 }
 
@@ -425,12 +427,13 @@ func TestSpanMemberConstant(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *Constant, got %T", iface.Members[0])
 	}
-	// "const" keyword is on line 3, at offset 2 (two spaces of indent).
+	// "const" keyword is on line 3.
+	// Absolute byte offset: "[Exposed=Window]\n" (17) + "interface Foo {\n" (16) + 2 indent = 35.
 	if c.Span.Line != 3 {
 		t.Errorf("Constant.Span.Line = %d, want 3", c.Span.Line)
 	}
-	if c.Span.Offset != 2 {
-		t.Errorf("Constant.Span.Offset = %d, want 2 (start of 'const')", c.Span.Offset)
+	if c.Span.Offset != 35 {
+		t.Errorf("Constant.Span.Offset = %d, want 35 (start of 'const')", c.Span.Offset)
 	}
 }
 

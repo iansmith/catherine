@@ -99,6 +99,7 @@ func (p *parser) parseAll() (defs []Definition, err error) {
 		return nil, nil
 	}
 	for {
+		firstTok := p.current()
 		ea := p.parseExtAttrs()
 		def := p.parseDefinition()
 		if def == nil {
@@ -108,6 +109,7 @@ func (p *parser) parseAll() (defs []Definition, err error) {
 			break
 		}
 		def.setExtAttrs(ea)
+		def.setSpan(spanFrom(firstTok))
 		defs = append(defs, def)
 	}
 	if p.current().Kind != TokEOF {
@@ -115,7 +117,6 @@ func (p *parser) parseAll() (defs []Definition, err error) {
 	}
 	return defs, nil
 }
-
 
 // parseDefinition tries each top-level production in order.
 func (p *parser) parseDefinition() Definition {
