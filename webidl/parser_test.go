@@ -687,6 +687,134 @@ func jsonDiff(path string, got, want any) string {
 	return ""
 }
 
+// TestValidateOverloadDistinguishability covers the §3.2.11
+// overload-not-distinguishable rule: within a single interface or namespace,
+// all overload pairs for the same operation name must be distinguishable at
+// some argument position.
+func TestValidateOverloadDistinguishability(t *testing.T) {
+	t.Parallel()
+
+	mustFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				return
+			}
+		}
+		t.Errorf("expected a ValidationError with rule %q; got: %v", rule, errs)
+	}
+
+	mustNotFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				t.Errorf("unexpected ValidationError with rule %q; got: %v", rule, errs)
+				return
+			}
+		}
+	}
+
+	const rule = "overload-not-distinguishable"
+
+	// Edge / boundary -----------------------------------------------------------
+
+	// Two zero-argument overloads share an empty effective argument list —
+	// there is no position at which to distinguish them.
+	t.Run("zero-arg/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo();
+  undefined foo();
+};`)
+	})
+
+	// An overload that uses `any` at position 0 can never be distinguished from
+	// any other overload at that position: `any` matches all types.
+	t.Run("any-type/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(any x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Error / rejection ---------------------------------------------------------
+
+	// Same base type at position 0 — canonical done-when case from the ticket.
+	t.Run("same-type-pos0/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Three overloads: the (long, long) pair is indistinguishable even though
+	// the third overload (DOMString) is distinguishable from the first.
+	t.Run("three-overloads-bad-pair/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(long y);
+  undefined foo(DOMString s);
+};`)
+	})
+
+	// Cross-feature interaction --------------------------------------------------
+
+	// Namespace operations (not just interface members) must satisfy the check.
+	t.Run("namespace-scope/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+namespace N {
+  undefined foo(long x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Happy path ----------------------------------------------------------------
+
+	// Different types at position 0 — other canonical done-when case from the ticket.
+	t.Run("different-types-pos0/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(DOMString y);
+};`)
+	})
+
+	// Single overload — no pair to compare, rule cannot fire.
+	t.Run("single-overload/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+};`)
+	})
+}
+
 func sortedKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
