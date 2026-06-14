@@ -38,6 +38,10 @@ func (ir *IR) Lookup(name string) *MergedDef {
 // For Interface and Namespace primaries, Members holds *Attribute, *Operation,
 // *Constant, *Constructor, and *IterableLike values. For Dictionary primaries,
 // Members holds *Field values (which satisfy Member via the memberNode marker).
+//
+// After Merge returns, all fields are owned by the IR. Callers must not assign
+// to or append to Members, InheritedMembers, or ExtAttrs; use AllMembers and
+// LookupMember for read access.
 type MergedDef struct {
 	// Primary is the non-partial, canonical definition.
 	Primary Definition
