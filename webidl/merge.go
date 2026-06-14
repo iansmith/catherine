@@ -38,6 +38,10 @@ func (ir *IR) Lookup(name string) *MergedDef {
 // For Interface and Namespace primaries, Members holds *Attribute, *Operation,
 // *Constant, *Constructor, and *IterableLike values. For Dictionary primaries,
 // Members holds *Field values (which satisfy Member via the memberNode marker).
+//
+// After Merge returns, all fields are owned by the IR. Callers must not assign
+// to or append to Members, InheritedMembers, or ExtAttrs; use AllMembers and
+// LookupMember for read access.
 type MergedDef struct {
 	// Primary is the non-partial, canonical definition.
 	Primary Definition
@@ -56,6 +60,45 @@ type MergedDef struct {
 	// closest ancestor first. Only populated for Interface and Dictionary
 	// definitions that have a non-empty Inheritance field.
 	InheritedMembers []Member
+}
+
+// AllMembers returns own members (Members) followed by inherited members
+// (InheritedMembers, closest ancestor first) as a single flat slice.
+// The returned slice is a fresh allocation; elements are pointer-identical
+// to those in Members and InheritedMembers. Callers must not mutate the
+// returned elements; the pointers are shared with the MergedDef and
+// mutation corrupts the IR for all subsequent operations.
+func (m *MergedDef) AllMembers() []Member {
+	if m == nil {
+		return nil
+	}
+	out := make([]Member, 0, len(m.Members)+len(m.InheritedMembers))
+	out = append(out, m.Members...)
+	out = append(out, m.InheritedMembers...)
+	return out
+}
+
+// LookupMember searches for a member by name, checking own members before
+// inherited members (prototype-chain semantics: the most-derived definition
+// wins). Returns (nil, false) for a nil receiver, an empty name, or when no
+// member is found.
+func (m *MergedDef) LookupMember(name string) (Member, bool) {
+	if m == nil || name == "" {
+		return nil, false
+	}
+	// Own members are searched before inherited so the most-derived
+	// definition wins when a name is shadowed.
+	for _, mem := range m.Members {
+		if n, ok := namedMember(mem); ok && n == name {
+			return mem, true
+		}
+	}
+	for _, mem := range m.InheritedMembers {
+		if n, ok := namedMember(mem); ok && n == name {
+			return mem, true
+		}
+	}
+	return nil, false
 }
 
 // Merge takes the flat definition list returned by Parse and produces a
@@ -254,6 +297,30 @@ func collectMembers(md *MergedDef, def Definition) {
 			md.Members = append(md.Members, f)
 		}
 	}
+}
+
+// namedMember returns the name of a member that carries a Name field, and true.
+// Returns ("", false) for anonymous members (Constructor, IterableLike) and for
+// named members whose Name happens to be empty (e.g. anonymous operations).
+// Used by LookupMember to skip un-named members during name lookup.
+func namedMember(m Member) (string, bool) {
+	var name string
+	switch v := m.(type) {
+	case *Attribute:
+		name = v.Name
+	case *Operation:
+		name = v.Name
+	case *Constant:
+		name = v.Name
+	case *Field:
+		name = v.Name
+	default:
+		return "", false
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // inheritanceOf returns the semantic parent name for definitions that support
