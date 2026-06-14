@@ -880,6 +880,38 @@ namespace NS {
 }
 
 // ---------------------------------------------------------------------------
+// namedMember exhaustiveness (CATH-26)
+// ---------------------------------------------------------------------------
+
+// TestNamedMemberCoversAllMemberTypes ensures that namedMember handles every
+// concrete Member type defined in ast.go. When a new type is added to ast.go
+// without a matching case in namedMember, this test will fail to compile (if
+// the type doesn't satisfy Member) or will produce an unexpected result.
+func TestNamedMemberCoversAllMemberTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		m    Member
+		want string
+		ok   bool
+	}{
+		{&Attribute{Name: "a"}, "a", true},
+		{&Operation{Name: "op"}, "op", true},
+		{&Operation{Name: ""}, "", false}, // anonymous getter/setter/deleter
+		{&Constant{Name: "C"}, "C", true},
+		{&Field{Name: "f"}, "f", true},
+		{&Constructor{}, "", false},    // no Name field
+		{&IterableLike{}, "", false},   // no Name field
+	}
+	for _, tc := range cases {
+		got, ok := namedMember(tc.m)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("namedMember(%T): got (%q, %v), want (%q, %v)",
+				tc.m, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Multi-file merge
 // ---------------------------------------------------------------------------
 

@@ -61,8 +61,13 @@ type MergedDef struct {
 // AllMembers returns own members (Members) followed by inherited members
 // (InheritedMembers, closest ancestor first) as a single flat slice.
 // The returned slice is a fresh allocation; elements are pointer-identical
-// to those in Members and InheritedMembers.
+// to those in Members and InheritedMembers. Callers must not mutate the
+// returned elements; the pointers are shared with the MergedDef and
+// mutation corrupts the IR for all subsequent operations.
 func (m *MergedDef) AllMembers() []Member {
+	if m == nil {
+		return nil
+	}
 	out := make([]Member, 0, len(m.Members)+len(m.InheritedMembers))
 	out = append(out, m.Members...)
 	out = append(out, m.InheritedMembers...)
@@ -71,18 +76,22 @@ func (m *MergedDef) AllMembers() []Member {
 
 // LookupMember searches for a member by name, checking own members before
 // inherited members (prototype-chain semantics: the most-derived definition
-// wins). Returns (nil, false) for an empty name or when no member is found.
+// wins). Returns (nil, false) for a nil receiver, an empty name, or when no
+// member is found.
 func (m *MergedDef) LookupMember(name string) (Member, bool) {
-	if name == "" {
+	if m == nil || name == "" {
 		return nil, false
 	}
 	// Own members are searched before inherited so the most-derived
 	// definition wins when a name is shadowed.
-	for _, group := range [][]Member{m.Members, m.InheritedMembers} {
-		for _, mem := range group {
-			if n, ok := namedMember(mem); ok && n == name {
-				return mem, true
-			}
+	for _, mem := range m.Members {
+		if n, ok := namedMember(mem); ok && n == name {
+			return mem, true
+		}
+	}
+	for _, mem := range m.InheritedMembers {
+		if n, ok := namedMember(mem); ok && n == name {
+			return mem, true
 		}
 	}
 	return nil, false
