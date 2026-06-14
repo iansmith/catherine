@@ -166,6 +166,10 @@ func (ns *Namespace) validate(defs *Definitions) []error {
 			errs = append(errs, v.validateMember(defs)...)
 		}
 	}
+
+	// overload-not-distinguishable: check within this namespace body's own members.
+	errs = append(errs, checkOverloadDistinguishability(ns.Members, defs)...)
+
 	return errs
 }
 
@@ -280,6 +284,13 @@ func (iface *Interface) validate(defs *Definitions) []error {
 	// Mixin and callback interfaces have no equivalent rule in webidl2.js.
 	if !iface.Partial && iface.Variant == IfaceRegular {
 		errs = append(errs, checkCrossOverload(defs, iface, statics, nonstatics)...)
+	}
+
+	// overload-not-distinguishable: check within this definition body's own members.
+	// Applies to regular and mixin interfaces (base and partials); not to callback
+	// interfaces, which may not have overloaded operations.
+	if iface.Variant != IfaceCallback {
+		errs = append(errs, checkOverloadDistinguishability(iface.Members, defs)...)
 	}
 
 	return errs
@@ -752,6 +763,316 @@ func checkCrossOverload(defs *Definitions, iface *Interface, statics, nonstatics
 		checkExtension(mixin.Members)
 	}
 
+	return errs
+}
+
+// ---------------------------------------------------------------------------
+// Overload distinguishability (overload-not-distinguishable rule, §3.2.11)
+// ---------------------------------------------------------------------------
+
+// resolveIDLType follows typedef chains to reach the concrete underlying type,
+// guarding against cycles with a visited set. Non-typedef named types (Interface,
+// Dictionary, …) and union/generic types are returned as-is.
+func resolveIDLType(t *IDLType, defs *Definitions, visited map[string]bool) *IDLType {
+	if t == nil || t.Union || t.Generic != "" {
+		return t
+	}
+	name := semanticName(t.Base)
+	if name == "" {
+		return t
+	}
+	if visited[name] {
+		return t
+	}
+	def, ok := defs.Unique[name]
+	if !ok {
+		return t
+	}
+	td, ok := def.(*Typedef)
+	if !ok {
+		return t
+	}
+	visited[name] = true
+	return resolveIDLType(td.IDLType, defs, visited)
+}
+
+// numericIDLTypes is the set of IDL numeric scalar type names (all share one bucket).
+var numericIDLTypes = map[string]bool{
+	"byte": true, "octet": true,
+	"short": true, "unsigned short": true,
+	"long": true, "unsigned long": true,
+	"long long": true, "unsigned long long": true,
+	"float": true, "unrestricted float": true,
+	"double": true, "unrestricted double": true,
+}
+
+// stringIDLTypes is the set of IDL string type names (all share one bucket).
+var stringIDLTypes = map[string]bool{
+	"DOMString": true, "ByteString": true, "USVString": true, "CSSOMString": true,
+}
+
+// ifaceBucketPrefix is the prefix used for named-interface buckets so that
+// distinct interface types sort into distinct buckets without an extra import.
+const ifaceBucketPrefix = "interface:"
+
+func isIfaceBucket(b string) bool {
+	return len(b) > len(ifaceBucketPrefix) && b[:len(ifaceBucketPrefix)] == ifaceBucketPrefix
+}
+
+// idlTypeBucket returns the §3.2.11 distinguishability bucket string for a
+// typedef-resolved, non-nullable IDLType. Named interface types use the prefix
+// "interface:<name>" so two different interfaces map to different buckets while
+// still being subject to the object-vs-interface rule.
+func idlTypeBucket(t *IDLType, defs *Definitions) string {
+	if t.Base == "any" {
+		return "any"
+	}
+	if t.Union {
+		return "union" // caller handles union members individually
+	}
+	if t.Generic != "" {
+		// record has its own bucket; every other generic (sequence, FrozenArray,
+		// ObservableArray, …) is treated as a sequence.
+		if t.Generic == "record" {
+			return "record"
+		}
+		return "sequence"
+	}
+	name := semanticName(t.Base)
+	switch {
+	case name == "boolean":
+		return "boolean"
+	case name == "undefined" || name == "void":
+		return "undefined"
+	case name == "bigint":
+		return "bigint"
+	case name == "object":
+		return "object"
+	case name == "symbol":
+		return "symbol"
+	case numericIDLTypes[name]:
+		return "numeric"
+	case stringIDLTypes[name]:
+		return "string"
+	}
+	if defs != nil {
+		if def, ok := defs.Unique[name]; ok {
+			switch def.(type) {
+			case *Dictionary:
+				return "dictionary"
+			case *CallbackFunction:
+				return "callback"
+			case *Enum:
+				return "string" // enums are string-typed in WebIDL
+			case *Interface:
+				return ifaceBucketPrefix + name
+			}
+		}
+	}
+	return ifaceBucketPrefix + name // unknown named type treated as interface-like
+}
+
+// bucketsDistinguishable reports whether two §3.2.11 bucket strings represent
+// types that are distinguishable from each other.
+func bucketsDistinguishable(b1, b2 string) bool {
+	if b1 == "any" || b2 == "any" {
+		return false
+	}
+	if b1 == b2 {
+		return false // same bucket (numeric×numeric, string×string, sequence×sequence, …)
+	}
+	// Two distinct named interface types are distinguishable from each other.
+	if isIfaceBucket(b1) && isIfaceBucket(b2) {
+		return true
+	}
+	// object is not distinguishable from interface, callback, dictionary, sequence, or record
+	// because all are JavaScript objects and the engine cannot tell them apart at the
+	// call site without deeper type inspection.
+	isObjectLike := func(b string) bool {
+		return isIfaceBucket(b) || b == "callback" || b == "dictionary" || b == "sequence" || b == "record"
+	}
+	if b1 == "object" && isObjectLike(b2) {
+		return false
+	}
+	if b2 == "object" && isObjectLike(b1) {
+		return false
+	}
+	// string and callback are not distinguishable (functions are also strings in some contexts).
+	if (b1 == "string" && b2 == "callback") || (b1 == "callback" && b2 == "string") {
+		return false
+	}
+	return true
+}
+
+// typesDistinguishable reports whether IDL types t1 and t2 are distinguishable
+// per spec §3.2.11. It resolves typedef chains, handles nullable, and for
+// union types checks all cross-product pairs of member types.
+func typesDistinguishable(t1, t2 *IDLType, defs *Definitions) bool {
+	r1 := resolveIDLType(t1, defs, make(map[string]bool))
+	r2 := resolveIDLType(t2, defs, make(map[string]bool))
+
+	// Track nullable from both the original reference and the resolved form.
+	n1 := t1.Nullable || r1.Nullable
+	n2 := t2.Nullable || r2.Nullable
+
+	// §3.2.11.1 step 1: a nullable type vs. a plain dictionary is not distinguishable
+	// because passing null satisfies both — null is an accepted dictionary value.
+	isDictBucket := func(r *IDLType) bool {
+		return !r.Union && r.Generic == "" && idlTypeBucket(r, defs) == "dictionary"
+	}
+	if (n1 && isDictBucket(r2)) || (n2 && isDictBucket(r1)) {
+		return false
+	}
+
+	// Build the flat member sets. The parser already flattens nested unions, so
+	// Subtypes contains the leaf members for union types.
+	members := func(r *IDLType) []*IDLType {
+		if r.Union {
+			return r.Subtypes
+		}
+		return []*IDLType{r}
+	}
+
+	// Resolve and strip nullable from each member, then map to a bucket string.
+	toBuckets := func(ms []*IDLType) []string {
+		out := make([]string, len(ms))
+		for i, m := range ms {
+			rm := resolveIDLType(m, defs, make(map[string]bool))
+			if rm.Nullable {
+				cp := *rm
+				cp.Nullable = false
+				rm = &cp
+			}
+			out[i] = idlTypeBucket(rm, defs)
+		}
+		return out
+	}
+	buckets1 := toBuckets(members(r1))
+	buckets2 := toBuckets(members(r2))
+
+	// §3.2.11 step 4: if any cross-pair (u1, u2) is not distinguishable, the
+	// whole pair t1/t2 is not distinguishable.
+	for _, b1 := range buckets1 {
+		for _, b2 := range buckets2 {
+			if !bucketsDistinguishable(b1, b2) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// opArgCounts returns the effective argument count bounds for op.
+// min = count of required (non-optional, non-variadic) args.
+// max = total declared arg count.
+// variadic = true if the last arg uses the ... spread syntax.
+func opArgCounts(op *Operation) (min, max int, variadic bool) {
+	max = len(op.Arguments)
+	for _, arg := range op.Arguments {
+		if arg.Variadic {
+			variadic = true
+			break
+		}
+		if !arg.Optional {
+			min++
+		}
+	}
+	return
+}
+
+// effectiveArgIDLType returns the IDLType at the given position in op's
+// effective argument list. For variadic operations the last arg's type is
+// returned for any position beyond the declared arg count.
+func effectiveArgIDLType(op *Operation, pos int) *IDLType {
+	if pos < len(op.Arguments) {
+		return op.Arguments[pos].IDLType
+	}
+	if len(op.Arguments) > 0 && op.Arguments[len(op.Arguments)-1].Variadic {
+		return op.Arguments[len(op.Arguments)-1].IDLType
+	}
+	return nil
+}
+
+// overloadPairDistinguishable reports whether two operations of the same name
+// are distinguishable per §3.2.11. The pair is distinguishable if there exists
+// some effective argument count N and position i < N where the types differ in
+// a spec-distinguishable way. If any effective count N where both operations
+// appear yields no distinguishing position, the pair is not distinguishable.
+func overloadPairDistinguishable(a, b *Operation, defs *Definitions) bool {
+	minA, maxA, variadicA := opArgCounts(a)
+	minB, maxB, variadicB := opArgCounts(b)
+
+	// Scan up to the larger of the two declared arg counts. For variadic ops,
+	// positions beyond their declared count repeat the variadic type; checking up
+	// to the other op's declared count is always sufficient.
+	upperN := maxA
+	if maxB > upperN {
+		upperN = maxB
+	}
+
+	for n := 0; n <= upperN; n++ {
+		inA := n >= minA && (variadicA || n <= maxA)
+		inB := n >= minB && (variadicB || n <= maxB)
+		if !inA || !inB {
+			continue
+		}
+		// Both operations appear in the effective overload set at size n.
+		// Look for a distinguishing argument position.
+		distinguishedAtN := false
+		for pos := 0; pos < n; pos++ {
+			tA := effectiveArgIDLType(a, pos)
+			tB := effectiveArgIDLType(b, pos)
+			if tA == nil || tB == nil {
+				continue
+			}
+			if typesDistinguishable(tA, tB, defs) {
+				distinguishedAtN = true
+				break
+			}
+		}
+		if !distinguishedAtN {
+			return false
+		}
+	}
+	return true
+}
+
+// checkOverloadDistinguishability implements the overload-not-distinguishable
+// rule for a single definition body (the Members slice of one interface or
+// namespace declaration). It groups named operations by (name, isStatic) and
+// reports a ValidationError for every pair within a group that is not
+// distinguishable at any effective argument position.
+func checkOverloadDistinguishability(members []Member, defs *Definitions) []error {
+	type opKey struct {
+		name     string
+		isStatic bool
+	}
+	groups := make(map[opKey][]*Operation)
+	for _, m := range members {
+		op, ok := m.(*Operation)
+		if !ok || op.Name == "" {
+			continue
+		}
+		key := opKey{name: op.Name, isStatic: op.Special == "static"}
+		groups[key] = append(groups[key], op)
+	}
+
+	var errs []error
+	for key, ops := range groups {
+		if len(ops) < 2 {
+			continue
+		}
+		for i := 0; i < len(ops); i++ {
+			for j := i + 1; j < len(ops); j++ {
+				if !overloadPairDistinguishable(ops[i], ops[j], defs) {
+					errs = append(errs, &ValidationError{
+						Rule:    "overload-not-distinguishable",
+						Message: fmt.Sprintf("The overloads of operation %q are not distinguishable.", key.name),
+					})
+				}
+			}
+		}
+	}
 	return errs
 }
 

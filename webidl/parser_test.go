@@ -167,6 +167,7 @@ var implementedRules = map[string]bool{
 	"migrate-allowshared":            true, // CATH-9
 	"replace-void":                   true, // CATH-9
 	"obsolete-async-iterable-syntax": true, // CATH-9
+	"overload-not-distinguishable":   true, // CATH-28
 }
 
 // TestValidateAsyncSequenceIdlToJs tests that async_sequence types cannot be
