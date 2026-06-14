@@ -419,6 +419,284 @@ func TestMergeInheritanceCycleDeepChain(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// AllMembers / LookupMember helpers (CATH-26)
+// ---------------------------------------------------------------------------
+
+// attrName extracts the Name from a Member that is an *Attribute.
+// Returns "" for any other Member kind (forces a test failure if misused).
+func attrName(m Member) string {
+	if a, ok := m.(*Attribute); ok {
+		return a.Name
+	}
+	return ""
+}
+
+// TestAllMembersNoInheritance verifies that AllMembers on a flat (non-inheriting)
+// interface returns exactly the same members as MergedDef.Members.
+func TestAllMembersNoInheritance(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Flat {
+  attribute long a;
+  attribute long b;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Flat")
+	if md == nil {
+		t.Fatal("Lookup(\"Flat\") returned nil")
+	}
+	all := md.AllMembers()
+	if got, want := len(all), len(md.Members); got != want {
+		t.Errorf("AllMembers length: got %d, want %d (same as Members)", got, want)
+	}
+}
+
+// TestAllMembersNoOwnMembers verifies that a child with zero own members and a
+// parent with members returns only the inherited members from AllMembers.
+func TestAllMembersNoOwnMembers(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Parent {
+  attribute long px;
+};
+[Exposed=Window]
+interface Child : Parent {};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Child")
+	if md == nil {
+		t.Fatal("Lookup(\"Child\") returned nil")
+	}
+	if got := len(md.Members); got != 0 {
+		t.Fatalf("expected Child to have 0 own members, got %d", got)
+	}
+	all := md.AllMembers()
+	if got := len(all); got != 1 {
+		t.Errorf("AllMembers: expected 1 (inherited px), got %d", got)
+	}
+}
+
+// TestAllMembersThreeLevelOrder verifies that AllMembers on a three-level chain
+// C:B:A returns C's own members first, then B's, then A's — closest-first.
+func TestAllMembersThreeLevelOrder(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface A {
+  attribute long ax;
+};
+[Exposed=Window]
+interface B : A {
+  attribute long bx;
+};
+[Exposed=Window]
+interface C : B {
+  attribute long cx;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("C")
+	if md == nil {
+		t.Fatal("Lookup(\"C\") returned nil")
+	}
+	all := md.AllMembers()
+	if got := len(all); got != 3 {
+		t.Fatalf("AllMembers: expected 3 (cx, bx, ax), got %d", got)
+	}
+	want := []string{"cx", "bx", "ax"}
+	for i, m := range all {
+		if got := attrName(m); got != want[i] {
+			t.Errorf("AllMembers[%d]: got %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+// TestAllMembersWithMixinsAndInheritance verifies that mixin members appear in
+// the own set (before inherited members) when both are present.
+func TestAllMembersWithMixinsAndInheritance(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Parent {
+  attribute long px;
+};
+interface mixin M {
+  attribute long mx;
+};
+[Exposed=Window]
+interface Child : Parent {
+  attribute long cx;
+};
+Child includes M;
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Child")
+	if md == nil {
+		t.Fatal("Lookup(\"Child\") returned nil")
+	}
+	// Child owns cx + mx (mixin); px is inherited.
+	all := md.AllMembers()
+	if got := len(all); got != 3 {
+		t.Fatalf("AllMembers: expected 3 (cx, mx, px), got %d", got)
+	}
+	// The first two are own; the last is inherited.
+	ownNames := map[string]bool{
+		attrName(all[0]): true,
+		attrName(all[1]): true,
+	}
+	if !ownNames["cx"] || !ownNames["mx"] {
+		t.Errorf("AllMembers: expected own members {cx, mx} in first two slots, got %q and %q",
+			attrName(all[0]), attrName(all[1]))
+	}
+	if got := attrName(all[2]); got != "px" {
+		t.Errorf("AllMembers[2]: expected inherited px, got %q", got)
+	}
+}
+
+// TestLookupMemberNotFound verifies that LookupMember returns (nil, false) for
+// a name that does not exist in own or inherited members.
+func TestLookupMemberNotFound(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Iface {
+  attribute long a;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Iface")
+	if md == nil {
+		t.Fatal("Lookup(\"Iface\") returned nil")
+	}
+	m, ok := md.LookupMember("nonexistent")
+	if ok {
+		t.Errorf("LookupMember(\"nonexistent\"): expected ok=false, got true (member=%v)", m)
+	}
+	if m != nil {
+		t.Errorf("LookupMember(\"nonexistent\"): expected nil member, got %v", m)
+	}
+}
+
+// TestLookupMemberInheritedSet verifies that LookupMember finds a member that
+// exists only in the inherited set (not in own members).
+func TestLookupMemberInheritedSet(t *testing.T) {
+	t.Parallel()
+	src := `
+[Exposed=Window]
+interface Base {
+  attribute long baseAttr;
+};
+[Exposed=Window]
+interface Derived : Base {};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Derived")
+	if md == nil {
+		t.Fatal("Lookup(\"Derived\") returned nil")
+	}
+	m, ok := md.LookupMember("baseAttr")
+	if !ok {
+		t.Fatal("LookupMember(\"baseAttr\"): expected ok=true for inherited member")
+	}
+	if got := attrName(m); got != "baseAttr" {
+		t.Errorf("LookupMember returned wrong member: got name %q, want %q", got, "baseAttr")
+	}
+}
+
+// TestLookupMemberOwnShadowsInherited verifies prototype-chain lookup semantics:
+// when the same member name appears in both own and inherited sets, the own
+// (most-derived) member is returned.
+func TestLookupMemberOwnShadowsInherited(t *testing.T) {
+	t.Parallel()
+	// Both Parent and Child define an attribute named "shared".
+	// WebIDL allows this in dictionaries (field override) and via [SameObject] patterns.
+	// We test with dictionary fields to stay within spec.
+	src := `
+dictionary Parent {
+  long shared;
+  long parentOnly;
+};
+dictionary Child : Parent {
+  long shared;
+  long childOnly;
+};
+`
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ir, mergeErrs := Merge(defs)
+	if len(mergeErrs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", mergeErrs)
+	}
+	md := ir.Lookup("Child")
+	if md == nil {
+		t.Fatal("Lookup(\"Child\") returned nil")
+	}
+	m, ok := md.LookupMember("shared")
+	if !ok {
+		t.Fatal("LookupMember(\"shared\"): expected ok=true")
+	}
+	// The returned member must be Child's own "shared", not Parent's.
+	// Verify by checking it's in the own Members slice, not InheritedMembers.
+	foundInOwn := false
+	for _, own := range md.Members {
+		if own == m {
+			foundInOwn = true
+			break
+		}
+	}
+	if !foundInOwn {
+		t.Error("LookupMember(\"shared\"): returned inherited copy instead of own (most-derived) member")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Multi-file merge
 // ---------------------------------------------------------------------------
 
