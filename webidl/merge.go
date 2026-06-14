@@ -58,6 +58,36 @@ type MergedDef struct {
 	InheritedMembers []Member
 }
 
+// AllMembers returns own members (Members) followed by inherited members
+// (InheritedMembers, closest ancestor first) as a single flat slice.
+// The returned slice is a fresh allocation; elements are pointer-identical
+// to those in Members and InheritedMembers.
+func (m *MergedDef) AllMembers() []Member {
+	out := make([]Member, 0, len(m.Members)+len(m.InheritedMembers))
+	out = append(out, m.Members...)
+	out = append(out, m.InheritedMembers...)
+	return out
+}
+
+// LookupMember searches for a member by name, checking own members before
+// inherited members (prototype-chain semantics: the most-derived definition
+// wins). Returns (nil, false) for an empty name or when no member is found.
+func (m *MergedDef) LookupMember(name string) (Member, bool) {
+	if name == "" {
+		return nil, false
+	}
+	// Own members are searched before inherited so the most-derived
+	// definition wins when a name is shadowed.
+	for _, group := range [][]Member{m.Members, m.InheritedMembers} {
+		for _, mem := range group {
+			if n, ok := namedMember(mem); ok && n == name {
+				return mem, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // Merge takes the flat definition list returned by Parse and produces a
 // fully-resolved IR.  Non-fatal merge errors (unknown partial targets, missing
 // mixin references, inheritance cycles, etc.) are returned alongside a valid
@@ -254,6 +284,30 @@ func collectMembers(md *MergedDef, def Definition) {
 			md.Members = append(md.Members, f)
 		}
 	}
+}
+
+// namedMember returns the name of a member that carries a Name field, and true.
+// Returns ("", false) for anonymous members (Constructor, IterableLike) and for
+// named members whose Name happens to be empty (e.g. anonymous operations).
+// Used by LookupMember to skip un-named members during name lookup.
+func namedMember(m Member) (string, bool) {
+	var name string
+	switch v := m.(type) {
+	case *Attribute:
+		name = v.Name
+	case *Operation:
+		name = v.Name
+	case *Constant:
+		name = v.Name
+	case *Field:
+		name = v.Name
+	default:
+		return "", false
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // inheritanceOf returns the semantic parent name for definitions that support
