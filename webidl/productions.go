@@ -549,7 +549,7 @@ func (p *parser) parseDictionary(partial *Token) *Dictionary {
 			ea = []*ExtAttr{}
 		}
 		f.ExtAttrs = ea
-		f.Span = spanFrom(firstTok)
+		f.setSpan(spanFrom(firstTok))
 		d.Members = append(d.Members, f)
 	}
 }
