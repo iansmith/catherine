@@ -167,6 +167,7 @@ var implementedRules = map[string]bool{
 	"migrate-allowshared":            true, // CATH-9
 	"replace-void":                   true, // CATH-9
 	"obsolete-async-iterable-syntax": true, // CATH-9
+	"overload-not-distinguishable":   true, // CATH-28
 }
 
 // TestValidateAsyncSequenceIdlToJs tests that async_sequence types cannot be
@@ -685,6 +686,367 @@ func jsonDiff(path string, got, want any) string {
 		return fmt.Sprintf("at %s: scalar mismatch\n  got:  %v (%T)\n  want: %v (%T)", path, got, got, want, want)
 	}
 	return ""
+}
+
+// TestValidateOverloadDistinguishability covers the §3.2.11
+// overload-not-distinguishable rule: within a single interface or namespace,
+// all overload pairs for the same operation name must be distinguishable at
+// some argument position.
+func TestValidateOverloadDistinguishability(t *testing.T) {
+	t.Parallel()
+
+	mustFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				return
+			}
+		}
+		t.Errorf("expected a ValidationError with rule %q; got: %v", rule, errs)
+	}
+
+	mustNotFire := func(t *testing.T, rule, src string) {
+		t.Helper()
+		defs, err := Parse(src)
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		errs := Validate(defs)
+		for _, e := range errs {
+			if ve, ok := e.(*ValidationError); ok && ve.Rule == rule {
+				t.Errorf("unexpected ValidationError with rule %q; got: %v", rule, errs)
+				return
+			}
+		}
+	}
+
+	const rule = "overload-not-distinguishable"
+
+	// Edge / boundary -----------------------------------------------------------
+
+	// Two zero-argument overloads share an empty effective argument list —
+	// there is no position at which to distinguish them.
+	t.Run("zero-arg/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo();
+  undefined foo();
+};`)
+	})
+
+	// An overload that uses `any` at position 0 can never be distinguished from
+	// any other overload at that position: `any` matches all types.
+	t.Run("any-type/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(any x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Error / rejection ---------------------------------------------------------
+
+	// Same base type at position 0 — canonical done-when case from the ticket.
+	t.Run("same-type-pos0/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Three overloads: the (long, long) pair is indistinguishable even though
+	// the third overload (DOMString) is distinguishable from the first.
+	t.Run("three-overloads-bad-pair/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(long y);
+  undefined foo(DOMString s);
+};`)
+	})
+
+	// Cross-feature interaction --------------------------------------------------
+
+	// Namespace operations (not just interface members) must satisfy the check.
+	t.Run("namespace-scope/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+namespace N {
+  undefined foo(long x);
+  undefined foo(long y);
+};`)
+	})
+
+	// Happy path ----------------------------------------------------------------
+
+	// Different types at position 0 — other canonical done-when case from the ticket.
+	t.Run("different-types-pos0/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(DOMString y);
+};`)
+	})
+
+	// Single overload — no pair to compare, rule cannot fire.
+	t.Run("single-overload/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+};`)
+	})
+
+	// Adversary gap tests -------------------------------------------------------
+
+	// 1a: Optional arg expansion — f(long) and f(long, optional DOMString) both
+	// appear in the effective overload set at size 1 with type (long). Ambiguous
+	// at that size even though size 2 is distinguishable.
+	t.Run("optional-arg-ambiguous-effective-tuple/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(long x, optional DOMString y);
+};`)
+	})
+
+	// 1b: Variadic arg — foo(long... x) contributes a size-1 effective tuple of
+	// type (long), which collides with foo(long y) at size 1.
+	t.Run("variadic-same-type/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long... x);
+  undefined foo(long y);
+};`)
+	})
+
+	// 1c: Optional stripping produces two size-0 effective tuples with no argument
+	// positions — indistinguishable at size 0 even though size-1 types differ.
+	t.Run("zero-arg-via-optional-stripping/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(optional long x);
+  undefined foo(optional DOMString y);
+};`)
+	})
+
+	// 1d: Completely different arities with no shared effective-set size must
+	// NOT fire — there is no argument count at which both appear.
+	t.Run("different-arity-no-shared-size/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(DOMString x, long y);
+};`)
+	})
+
+	// 2a: String-type same bucket — DOMString and USVString are both string types
+	// and are not distinguishable from each other per the spec table.
+	t.Run("string-same-bucket/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(DOMString x);
+  undefined foo(USVString y);
+};`)
+	})
+
+	// 2b: Both args are object — same type, clearly not distinguishable.
+	t.Run("object-vs-object/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(object x);
+  undefined foo(object y);
+};`)
+	})
+
+	// 2e: Sequence-like same bucket — sequence<T> and FrozenArray<T> are in the
+	// same "sequence types" bucket regardless of element type.
+	t.Run("sequence-vs-frozenarray/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(sequence<long> x);
+  undefined foo(FrozenArray<DOMString> y);
+};`)
+	})
+
+	// 3a: Static and non-static operations of the same name are in separate
+	// effective overload sets — the pair must NOT trigger the rule.
+	t.Run("static-vs-nonstatic-same-name/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  static undefined foo(long y);
+};`)
+	})
+
+	// 3b: Two indistinguishable static overloads must fire — static operations
+	// have their own effective overload set that is checked independently.
+	t.Run("static-same-type/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  static undefined foo(long x);
+  static undefined foo(long y);
+};`)
+	})
+
+	// 3c: Same-type ops across base and partial are caught by no-cross-overload,
+	// not overload-not-distinguishable. The wrong rule must not fire here.
+	t.Run("cross-partial-boundary/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+};
+partial interface I {
+  undefined foo(long y);
+};`)
+	})
+
+	// 4a: `any` blocks distinguishability at position 0, but position 1 has
+	// different types — the pair IS distinguishable and must NOT fire.
+	t.Run("any-pos0-diff-pos1/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(any x, long a);
+  undefined foo(any x, DOMString b);
+};`)
+	})
+
+	// 5a: Typedef resolved to the same base type — textual comparison would
+	// incorrectly say "distinguishable"; resolution is required.
+	t.Run("typedef-same-base-type/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+typedef long MyLong;
+[Exposed=Window]
+interface I {
+  undefined foo(long x);
+  undefined foo(MyLong y);
+};`)
+	})
+
+	// 5b: Nullable strips to the same numeric type — long? and long are both in
+	// the numeric-types bucket and are not distinguishable.
+	t.Run("nullable-vs-nonnullable-same-base/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long? x);
+  undefined foo(long y);
+};`)
+	})
+
+	// 5c: Spec step 1 short-circuit — one type is nullable and the other is a
+	// dictionary; per §3.2.11.1 step 1 these are immediately not distinguishable.
+	// Required field on D prevents dict-arg-optional from firing on this fixture.
+	t.Run("nullable-scalar-vs-dictionary/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+dictionary D { required long x; };
+[Exposed=Window]
+interface I {
+  undefined foo(long? x);
+  undefined foo(D y);
+};`)
+	})
+
+	// 6a: Cross-category no-fire cases — each pair falls in different spec buckets
+	// and must NOT fire.
+
+	t.Run("boolean-vs-numeric/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(boolean x);
+  undefined foo(long y);
+};`)
+	})
+
+	t.Run("sequence-vs-numeric/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(sequence<long> x);
+  undefined foo(long y);
+};`)
+	})
+
+	t.Run("dictionary-vs-string/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+dictionary D {};
+[Exposed=Window]
+interface I {
+  undefined foo(D d);
+  undefined foo(DOMString s);
+};`)
+	})
+
+	// 6b: Position > 0 distinguishability — both directions must work correctly.
+
+	// Same type at pos 0, different types at pos 1: distinguishable → must NOT fire.
+	t.Run("same-pos0-diff-pos1/no-fire", func(t *testing.T) {
+		t.Parallel()
+		mustNotFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x, DOMString a);
+  undefined foo(long x, long b);
+};`)
+	})
+
+	// Same type at pos 0 AND pos 1: no distinguishing position → must fire.
+	t.Run("same-pos0-same-pos1/fires", func(t *testing.T) {
+		t.Parallel()
+		mustFire(t, rule, `
+[Exposed=Window]
+interface I {
+  undefined foo(long x, DOMString a);
+  undefined foo(long x, DOMString b);
+};`)
+	})
 }
 
 func sortedKeys(m map[string]any) []string {
