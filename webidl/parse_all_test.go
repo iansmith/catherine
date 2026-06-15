@@ -274,6 +274,23 @@ func TestParseAllErrorsHaveNonEmptyMessage(t *testing.T) {
 	}
 }
 
+// ---- Regression: malformed extended attributes that bleed into the definition body ----
+
+// When an extended-attribute block is malformed with a trailing comma ([Foo,) and is
+// immediately followed by a definition, the entire unit — extattr + definition — is
+// treated as one broken definition and dropped.  The interface is NOT returned as a
+// separate good definition because the user intended it to be decorated by [Foo].
+func TestParseAllBadExtAttrTreatedAsOneUnit(t *testing.T) {
+	src := "[Foo,\n" + goodIfaceA
+	defs, errs := ParseAll(src)
+	if len(errs) == 0 {
+		t.Error("malformed extattr: want at least 1 error, got 0")
+	}
+	if len(defs) != 0 {
+		t.Errorf("malformed extattr: [Foo, interface GoodA] is one broken unit — want 0 defs, got %d", len(defs))
+	}
+}
+
 // ParseAll leaves the existing Parse() untouched — it must still work and
 // return exactly one error for a bad source.
 func TestParseBackwardsCompatibility(t *testing.T) {
