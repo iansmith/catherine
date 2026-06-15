@@ -177,7 +177,7 @@ func recordSub(tokens []Token, i int, newVal string, subs map[int]string) {
 	if i < 0 || i >= len(tokens) || tokens[i].Kind == TokEOF {
 		return
 	}
-	if tokens[i].Value != newVal {
+	if unescape(tokens[i].Value) != newVal {
 		subs[tokens[i].Offset] = newVal
 	}
 }

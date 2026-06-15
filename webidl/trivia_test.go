@@ -828,6 +828,22 @@ interface Foo {
 	}
 }
 
+// TestRoundTripEscapedIdentifier verifies that a definition whose name is an
+// escaped identifier (_foo) round-trips byte-for-byte. The parser unescapes the
+// leading '_' when storing d.Name; recordSub must not treat this as a change.
+func TestRoundTripEscapedIdentifier(t *testing.T) {
+	t.Parallel()
+	src := "interface _reserved {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	got := PrintIDL(src, defs)
+	if got != src {
+		t.Errorf("escaped-identifier round-trip: got %q, want %q", got, src)
+	}
+}
+
 // TestRoundTripEnum verifies that an enum definition (value strings, commas,
 // braces) round-trips exactly — exercising the string-literal token path.
 func TestRoundTripEnum(t *testing.T) {
