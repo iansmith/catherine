@@ -500,6 +500,312 @@ func TestPrintIDLChangedDictionaryName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Write path: adversary gap tests (CATH-27)
+// ---------------------------------------------------------------------------
+
+// TestPrintIDLChangedEnumName verifies the write path for Enum definitions.
+// An enum body contains TokString values that must not be mistaken for the
+// name token when scanning forward from the keyword position.
+func TestPrintIDLChangedEnumName(t *testing.T) {
+	t.Parallel()
+	src := "enum Color {\n  \"red\",\n  \"green\"\n};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Enum).Name = "Palette"
+	got := PrintIDL(src, defs)
+	want := "enum Palette {\n  \"red\",\n  \"green\"\n};\n"
+	if got != want {
+		t.Errorf("enum name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedTypedefName verifies the write path for Typedef.
+// The name token appears after the type expression, not immediately after the
+// keyword — a naive "first identifier after keyword" scan would misidentify it.
+func TestPrintIDLChangedTypedefName(t *testing.T) {
+	t.Parallel()
+	src := "typedef unsigned long long DOMTimeStamp;\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Typedef).Name = "EpochMs"
+	got := PrintIDL(src, defs)
+	want := "typedef unsigned long long EpochMs;\n"
+	if got != want {
+		t.Errorf("typedef name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNamespaceName verifies the write path for Namespace.
+// A missing case in the implementation's type switch would silently emit the
+// original name with no error.
+func TestPrintIDLChangedNamespaceName(t *testing.T) {
+	t.Parallel()
+	src := "namespace Math {\n  readonly attribute double PI;\n};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Namespace).Name = "Numerics"
+	got := PrintIDL(src, defs)
+	want := "namespace Numerics {\n  readonly attribute double PI;\n};\n"
+	if got != want {
+		t.Errorf("namespace name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedCallbackFunctionName verifies the write path for
+// CallbackFunction. The keyword is "callback" (shared with callback interface)
+// and the name immediately precedes a "=" token.
+func TestPrintIDLChangedCallbackFunctionName(t *testing.T) {
+	t.Parallel()
+	src := "callback EventHandler = undefined (Event event);\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*CallbackFunction).Name = "OnEvent"
+	got := PrintIDL(src, defs)
+	want := "callback OnEvent = undefined (Event event);\n"
+	if got != want {
+		t.Errorf("callback-function name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedIncludesTarget verifies renaming the left-hand (target)
+// name in an includes statement.
+func TestPrintIDLChangedIncludesTarget(t *testing.T) {
+	t.Parallel()
+	src := "WindowProxy includes WindowOrWorkerGlobalScope;\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Includes).Target = "WorkerProxy"
+	got := PrintIDL(src, defs)
+	want := "WorkerProxy includes WindowOrWorkerGlobalScope;\n"
+	if got != want {
+		t.Errorf("includes target write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedIncludesMixin verifies renaming the right-hand (mixin)
+// name in an includes statement — a distinct token that Span.Offset does not
+// point to, requiring a separate scan strategy.
+func TestPrintIDLChangedIncludesMixin(t *testing.T) {
+	t.Parallel()
+	src := "WindowProxy includes WindowOrWorkerGlobalScope;\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Includes).Includes = "GlobalMixin"
+	got := PrintIDL(src, defs)
+	want := "WindowProxy includes GlobalMixin;\n"
+	if got != want {
+		t.Errorf("includes mixin write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedInheritance verifies that Interface.Inheritance can be
+// replaced while leaving Interface.Name and all trivia intact.
+func TestPrintIDLChangedInheritance(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo : OldBase {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Inheritance = "NewBase"
+	got := PrintIDL(src, defs)
+	want := "interface Foo : NewBase {};\n"
+	if got != want {
+		t.Errorf("inheritance write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameWithInheritance verifies that changing Interface.Name
+// does not accidentally clobber the inheritance name when both are present.
+func TestPrintIDLChangedNameWithInheritance(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo : Base {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	got := PrintIDL(src, defs)
+	want := "interface Bar : Base {};\n"
+	if got != want {
+		t.Errorf("name-only write with inheritance: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameAndInheritanceSimultaneously verifies that two
+// replacements within the same definition token span are both applied correctly
+// without offset-delta interference.
+func TestPrintIDLChangedNameAndInheritanceSimultaneously(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo : OldBase {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	defs[0].(*Interface).Inheritance = "NewBase"
+	got := PrintIDL(src, defs)
+	want := "interface Bar : NewBase {};\n"
+	if got != want {
+		t.Errorf("name+inheritance simultaneous write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameToKeywordString verifies that a replacement name that
+// is a WebIDL keyword is emitted verbatim — the implementation must not
+// re-classify or skip it based on token kind.
+func TestPrintIDLChangedNameToKeywordString(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "long"
+	got := PrintIDL(src, defs)
+	want := "interface long {};\n"
+	if got != want {
+		t.Errorf("keyword-as-name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLNoOpRename verifies that setting Interface.Name to its current
+// value produces output byte-for-byte identical to the unmodified source.
+func TestPrintIDLNoOpRename(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Foo"
+	got := PrintIDL(src, defs)
+	if got != src {
+		t.Errorf("no-op rename: got %q, want %q", got, src)
+	}
+}
+
+// TestPrintIDLChangedPartialInterfaceName verifies the write path for a partial
+// interface. The "partial" keyword precedes "interface", adding one more token
+// between Span.Offset and the name identifier.
+func TestPrintIDLChangedPartialInterfaceName(t *testing.T) {
+	t.Parallel()
+	src := "partial interface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	got := PrintIDL(src, defs)
+	want := "partial interface Bar {};\n"
+	if got != want {
+		t.Errorf("partial interface name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedMixinName verifies the write path for interface mixin.
+// There is an extra "mixin" keyword token between "interface" and the name.
+func TestPrintIDLChangedMixinName(t *testing.T) {
+	t.Parallel()
+	src := "interface mixin Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	got := PrintIDL(src, defs)
+	want := "interface mixin Bar {};\n"
+	if got != want {
+		t.Errorf("mixin name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedCallbackInterfaceName verifies the write path for
+// callback interface — distinct from CallbackFunction despite the shared
+// "callback" keyword prefix.
+func TestPrintIDLChangedCallbackInterfaceName(t *testing.T) {
+	t.Parallel()
+	src := "callback interface EventListener {\n  undefined handleEvent(Event event);\n};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Observer"
+	got := PrintIDL(src, defs)
+	want := "callback interface Observer {\n  undefined handleEvent(Event event);\n};\n"
+	if got != want {
+		t.Errorf("callback interface name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameOnlySecondOfTwo verifies that modifying defs[1] in a
+// two-definition file applies the replacement correctly while leaving defs[0]
+// byte-for-byte identical. A directional offset-accumulation bug would corrupt
+// defs[1]'s position when defs[0] is unchanged.
+func TestPrintIDLChangedNameOnlySecondOfTwo(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n\n// separator\n\ninterface Bar {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[1].(*Interface).Name = "Renamed"
+	got := PrintIDL(src, defs)
+	want := "interface Foo {};\n\n// separator\n\ninterface Renamed {};\n"
+	if got != want {
+		t.Errorf("second-of-two rename: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedBothNamesInTwoDefinitions verifies that two simultaneous
+// name replacements in the same PrintIDL call both land correctly. An
+// offset-accumulation bug would corrupt the second replacement's position.
+func TestPrintIDLChangedBothNamesInTwoDefinitions(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\ninterface Bar {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Alpha"
+	defs[1].(*Interface).Name = "Beta"
+	got := PrintIDL(src, defs)
+	want := "interface Alpha {};\ninterface Beta {};\n"
+	if got != want {
+		t.Errorf("both-renamed write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameWithLeadingUnderscore verifies that a replacement
+// name starting with "_" (a legal WebIDL escape prefix) is emitted verbatim.
+func TestPrintIDLChangedNameWithLeadingUnderscore(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "_Foo"
+	got := PrintIDL(src, defs)
+	want := "interface _Foo {};\n"
+	if got != want {
+		t.Errorf("underscore-prefix name write: got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Happy-path cases
 // ---------------------------------------------------------------------------
 
