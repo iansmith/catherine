@@ -31,6 +31,24 @@ func Parse(src string) ([]Definition, error) {
 	return p.parseAll()
 }
 
+// ParseAll lexes and parses a WebIDL source string in tolerant mode, returning
+// all definitions that could be parsed alongside every error encountered.
+// Unlike Parse, ParseAll continues past syntax errors at definition boundaries
+// so that callers see the full set of diagnostics in a single pass.
+//
+// NOTE: this is a stub. The implementation below delegates to Parse() and
+// therefore still returns at most one error. Replace with full recovery logic.
+func ParseAll(src string) ([]Definition, []*ParseError) {
+	defs, err := Parse(src)
+	if err != nil {
+		if pe, ok := err.(*ParseError); ok {
+			return defs, []*ParseError{pe}
+		}
+		return defs, []*ParseError{{Message: err.Error()}}
+	}
+	return defs, nil
+}
+
 // parser is the recursive-descent state.
 type parser struct {
 	tokens []Token
