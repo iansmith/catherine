@@ -35,18 +35,93 @@ func Parse(src string) ([]Definition, error) {
 // all definitions that could be parsed alongside every error encountered.
 // Unlike Parse, ParseAll continues past syntax errors at definition boundaries
 // so that callers see the full set of diagnostics in a single pass.
-//
-// NOTE: this is a stub. The implementation below delegates to Parse() and
-// therefore still returns at most one error. Replace with full recovery logic.
 func ParseAll(src string) ([]Definition, []*ParseError) {
-	defs, err := Parse(src)
+	tokens, err := Tokenize(src)
 	if err != nil {
-		if pe, ok := err.(*ParseError); ok {
-			return defs, []*ParseError{pe}
+		if te, ok := err.(*TokenizeError); ok {
+			return nil, []*ParseError{{Line: te.Line, Message: te.Message}}
 		}
-		return defs, []*ParseError{{Message: err.Error()}}
+		return nil, []*ParseError{{Message: err.Error()}}
 	}
-	return defs, nil
+	p := &parser{tokens: tokens}
+	return p.parseAllTolerant()
+}
+
+// parseAllTolerant is the tolerant entry point. Each definition attempt is
+// wrapped in its own recover so a panic in one definition doesn't abort the
+// rest. After any failure the cursor is advanced to the next definition
+// boundary via syncToNextDefinition.
+func (p *parser) parseAllTolerant() (defs []Definition, errs []*ParseError) {
+	if len(p.tokens) == 1 { // only EOF sentinel
+		return nil, nil
+	}
+	for p.current().Kind != TokEOF {
+		firstTok := p.current()
+		def, ea, pe := p.tryParseDefinition()
+		if pe != nil {
+			errs = append(errs, pe)
+			p.syncToNextDefinition()
+			continue
+		}
+		if def == nil {
+			if len(ea) > 0 {
+				errs = append(errs, &ParseError{Line: firstTok.Line, Message: "Stray extended attributes"})
+				p.syncToNextDefinition()
+				continue
+			}
+			break // no production matched and no stray extattrs — normal exit
+		}
+		def.setExtAttrs(ea)
+		def.setSpan(spanFrom(firstTok))
+		defs = append(defs, def)
+	}
+	if p.current().Kind != TokEOF {
+		errs = append(errs, &ParseError{Line: p.current().Line, Message: "Unrecognised tokens"})
+	}
+	return defs, errs
+}
+
+// tryParseDefinition attempts to parse one top-level definition (including any
+// leading extended attributes). It catches any *ParseError panic and returns
+// it as pe instead of propagating it. Non-ParseError panics re-panic.
+func (p *parser) tryParseDefinition() (def Definition, ea []*ExtAttr, pe *ParseError) {
+	defer func() {
+		if r := recover(); r != nil {
+			if caught, ok := r.(*ParseError); ok {
+				pe = caught
+				return
+			}
+			panic(r)
+		}
+	}()
+	ea = p.parseExtAttrs()
+	def = p.parseDefinition()
+	return def, ea, nil
+}
+
+// definitionStarters is the set of keywords that can open a top-level WebIDL
+// definition. Used by syncToNextDefinition to identify recovery boundaries.
+var definitionStarters = []string{
+	"interface", "dictionary", "enum", "typedef",
+	"namespace", "callback", "partial",
+}
+
+// syncToNextDefinition advances the cursor past any partially-consumed tokens
+// to the next likely top-level definition boundary: a ';' followed immediately
+// by a definition-starter keyword or '[' (start of extended attributes).
+// Stops at EOF without advancing past it.
+func (p *parser) syncToNextDefinition() {
+	for p.current().Kind != TokEOF {
+		if p.consume(";") != nil {
+			t := p.current()
+			if t.Kind == TokInline &&
+				(slices.Contains(definitionStarters, t.Value) || t.Value == "[") {
+				return
+			}
+		} else {
+			p.pos++
+		}
+	}
 }
 
 // parser is the recursive-descent state.
