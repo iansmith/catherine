@@ -897,10 +897,6 @@ func bucketsDistinguishable(b1, b2 string) bool {
 	if b2 == "object" && isObjectLike(b1) {
 		return false
 	}
-	// string and callback are not distinguishable (functions are also strings in some contexts).
-	if (b1 == "string" && b2 == "callback") || (b1 == "callback" && b2 == "string") {
-		return false
-	}
 	return true
 }
 
@@ -908,6 +904,9 @@ func bucketsDistinguishable(b1, b2 string) bool {
 // per spec §3.2.11. It resolves typedef chains, handles nullable, and for
 // union types checks all cross-product pairs of member types.
 func typesDistinguishable(t1, t2 *IDLType, defs *Definitions) bool {
+	if t1 == nil || t2 == nil {
+		return false
+	}
 	r1 := resolveIDLType(t1, defs, make(map[string]bool))
 	r2 := resolveIDLType(t2, defs, make(map[string]bool))
 
@@ -1051,6 +1050,12 @@ func checkOverloadDistinguishability(members []Member, defs *Definitions) []erro
 	for _, m := range members {
 		op, ok := m.(*Operation)
 		if !ok || op.Name == "" {
+			continue
+		}
+		// Only regular and static operations form overload sets per §3.2.11.
+		// Named special ops (getter, setter, deleter, stringifier, legacy caller)
+		// are resolved by separate mechanisms and must not be grouped here.
+		if op.Special != "" && op.Special != "static" {
 			continue
 		}
 		key := opKey{name: op.Name, isStatic: op.Special == "static"}
