@@ -388,6 +388,118 @@ func TestPrintIDLMalformedSource(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Write path: modified-AST printing (CATH-27)
+// ---------------------------------------------------------------------------
+
+// TestPrintIDLChangedNameLonger verifies the write path when Interface.Name is
+// replaced with a longer identifier. The extra bytes must not shift or corrupt
+// any surrounding trivia.
+func TestPrintIDLChangedNameLonger(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "VeryLongInterfaceName"
+	got := PrintIDL(src, defs)
+	want := "interface VeryLongInterfaceName {};\n"
+	if got != want {
+		t.Errorf("longer-name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameShorter verifies the write path when Interface.Name is
+// replaced with a shorter identifier — the closing tokens must not be truncated.
+func TestPrintIDLChangedNameShorter(t *testing.T) {
+	t.Parallel()
+	src := "interface FooBarBaz {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "X"
+	got := PrintIDL(src, defs)
+	want := "interface X {};\n"
+	if got != want {
+		t.Errorf("shorter-name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameWithExtAttrs verifies that the write path correctly
+// skips the extended-attribute block when locating the name token — a
+// definition preceded by [Exposed=Window] must still have its name replaced.
+func TestPrintIDLChangedNameWithExtAttrs(t *testing.T) {
+	t.Parallel()
+	src := "[Exposed=Window]\ninterface Foo {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	got := PrintIDL(src, defs)
+	want := "[Exposed=Window]\ninterface Bar {};\n"
+	if got != want {
+		t.Errorf("ext-attr name write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedNameOnlyOneOfTwo verifies that modifying one interface
+// name in a two-definition file leaves the other definition byte-for-byte
+// identical — trivia between definitions must also be preserved.
+func TestPrintIDLChangedNameOnlyOneOfTwo(t *testing.T) {
+	t.Parallel()
+	src := "interface Foo {};\n\n// separator\n\ninterface Bar {};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Renamed"
+	got := PrintIDL(src, defs)
+	want := "interface Renamed {};\n\n// separator\n\ninterface Bar {};\n"
+	if got != want {
+		t.Errorf("partial-rename write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedInterfaceNamePreservesTrivia is the canonical DoD test:
+// a file with a leading comment, an interface with a member, and a trailing
+// newline. Changing Interface.Name must produce the new name in the output
+// while keeping all surrounding whitespace and comments intact.
+func TestPrintIDLChangedInterfaceNamePreservesTrivia(t *testing.T) {
+	t.Parallel()
+	src := "// header\ninterface Foo {\n  attribute long x;\n};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Interface).Name = "Bar"
+	got := PrintIDL(src, defs)
+	want := "// header\ninterface Bar {\n  attribute long x;\n};\n"
+	if got != want {
+		t.Errorf("trivia-preserve write: got %q, want %q", got, want)
+	}
+}
+
+// TestPrintIDLChangedDictionaryName verifies the write path for Dictionary
+// definitions — the same mechanism that locates Interface.Name must also work
+// for the dictionary keyword.
+func TestPrintIDLChangedDictionaryName(t *testing.T) {
+	t.Parallel()
+	src := "dictionary Options {\n  long width;\n};\n"
+	defs, err := Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	defs[0].(*Dictionary).Name = "Config"
+	got := PrintIDL(src, defs)
+	want := "dictionary Config {\n  long width;\n};\n"
+	if got != want {
+		t.Errorf("dictionary name write: got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Happy-path cases
 // ---------------------------------------------------------------------------
 
