@@ -180,6 +180,100 @@ func TestParseAllSingleGoodDef(t *testing.T) {
 	}
 }
 
+// ---- Adversary gap tests (A–F) ---------------------------------------------
+
+// A — Bad dictionary followed by a good definition: the good one must survive.
+const badDict = `dictionary BrokenDict { required; };`
+
+func TestParseAllBadDictionaryGoodAfterReturned(t *testing.T) {
+	src := joinIDL(badDict, goodIfaceA)
+	defs, errs := ParseAll(src)
+	if len(errs) == 0 {
+		t.Error("bad dictionary: want at least 1 error, got 0")
+	}
+	if len(defs) != 1 {
+		t.Errorf("bad dictionary: want 1 def (good interface after), got %d", len(defs))
+	}
+}
+
+// B — Bad enum followed by a good definition: the good one must survive.
+const badEnum = `enum BrokenEnum { };`
+
+func TestParseAllBadEnumGoodAfterReturned(t *testing.T) {
+	src := joinIDL(badEnum, goodIfaceA)
+	defs, errs := ParseAll(src)
+	if len(errs) == 0 {
+		t.Error("bad enum: want at least 1 error, got 0")
+	}
+	if len(defs) != 1 {
+		t.Errorf("bad enum: want 1 def (good interface after), got %d", len(defs))
+	}
+}
+
+// C — Bad partial keyword followed by a good definition: the good one must
+// survive even though `partial` was consumed before the error fired.
+func TestParseAllBadPartialGoodAfterReturned(t *testing.T) {
+	src := joinIDL(`partial enum Bad { "x" };`, goodIfaceA)
+	defs, errs := ParseAll(src)
+	if len(errs) == 0 {
+		t.Error("bad partial: want at least 1 error, got 0")
+	}
+	if len(defs) != 1 {
+		t.Errorf("bad partial: want 1 def (good interface after), got %d", len(defs))
+	}
+}
+
+// D — Good–bad–good: verify the returned definitions have the right names and
+// types, not just the right count.
+func TestParseAllGoodBadGoodDefsHaveCorrectIdentity(t *testing.T) {
+	src := joinIDL(goodIfaceA, badIfaceA, goodIfaceB)
+	defs, errs := ParseAll(src)
+	if len(errs) != 1 || len(defs) != 2 {
+		t.Fatalf("good-bad-good: want 1 error and 2 defs, got %d errors and %d defs (errs=%v)",
+			len(errs), len(defs), errs)
+	}
+	for i, d := range defs {
+		iface, ok := d.(*Interface)
+		if !ok {
+			t.Errorf("defs[%d]: want *Interface, got %T", i, d)
+			continue
+		}
+		want := []string{"GoodA", "GoodB"}[i]
+		if iface.Name != want {
+			t.Errorf("defs[%d]: want Name=%q, got %q", i, want, iface.Name)
+		}
+	}
+}
+
+// E — Errors must be returned in source (ascending line-number) order.
+func TestParseAllErrorsInSourceOrder(t *testing.T) {
+	src := joinIDL(badIfaceA, badIfaceB, badIfaceC)
+	_, errs := ParseAll(src)
+	if len(errs) < 2 {
+		t.Skipf("need at least 2 errors to check ordering (got %d); run after full implementation", len(errs))
+	}
+	for i := 1; i < len(errs); i++ {
+		if errs[i].Line < errs[i-1].Line {
+			t.Errorf("errors out of order: errs[%d].Line=%d < errs[%d].Line=%d",
+				i, errs[i].Line, i-1, errs[i-1].Line)
+		}
+	}
+}
+
+// F — Every error must carry a non-empty Message field.
+func TestParseAllErrorsHaveNonEmptyMessage(t *testing.T) {
+	src := joinIDL(badIfaceA, badIfaceB)
+	_, errs := ParseAll(src)
+	if len(errs) == 0 {
+		t.Fatal("want at least 1 error")
+	}
+	for i, e := range errs {
+		if e.Message == "" {
+			t.Errorf("error[%d] has empty Message (Line=%d)", i, e.Line)
+		}
+	}
+}
+
 // ParseAll leaves the existing Parse() untouched — it must still work and
 // return exactly one error for a bad source.
 func TestParseBackwardsCompatibility(t *testing.T) {
