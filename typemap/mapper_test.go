@@ -402,7 +402,61 @@ func TestMapTypeScalarExact(t *testing.T) {
 			if got.Pointer {
 				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", tc.base)
 			}
+			// String() is what codegen writes into source; must equal the Go type name.
+			if s := got.String(); s != tc.want {
+				t.Errorf("MapType(%q).String() = %q, want %q", tc.base, s, tc.want)
+			}
 		})
+	}
+}
+
+// TestMapTypeUnrestrictedFloatIdenticalToFloat verifies that "float" and
+// "unrestricted float" map to the same GoType struct in every field.
+func TestMapTypeUnrestrictedFloatIdenticalToFloat(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	restricted, err := m.MapType(&webidl.IDLType{Base: "float"})
+	if err != nil {
+		t.Fatalf("MapType(float) error: %v", err)
+	}
+	unrestricted, err := m.MapType(&webidl.IDLType{Base: "unrestricted float"})
+	if err != nil {
+		t.Fatalf("MapType(unrestricted float) error: %v", err)
+	}
+	want := GoType{Name: "float32"}
+	if restricted != want {
+		t.Errorf("MapType(float) = %+v, want %+v", restricted, want)
+	}
+	if unrestricted != want {
+		t.Errorf("MapType(unrestricted float) = %+v, want %+v", unrestricted, want)
+	}
+	if restricted != unrestricted {
+		t.Errorf("MapType(float) != MapType(unrestricted float): %+v vs %+v", restricted, unrestricted)
+	}
+}
+
+// TestMapTypeUnrestrictedDoubleIdenticalToDouble verifies that "double" and
+// "unrestricted double" map to the same GoType struct in every field.
+func TestMapTypeUnrestrictedDoubleIdenticalToDouble(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	restricted, err := m.MapType(&webidl.IDLType{Base: "double"})
+	if err != nil {
+		t.Fatalf("MapType(double) error: %v", err)
+	}
+	unrestricted, err := m.MapType(&webidl.IDLType{Base: "unrestricted double"})
+	if err != nil {
+		t.Fatalf("MapType(unrestricted double) error: %v", err)
+	}
+	want := GoType{Name: "float64"}
+	if restricted != want {
+		t.Errorf("MapType(double) = %+v, want %+v", restricted, want)
+	}
+	if unrestricted != want {
+		t.Errorf("MapType(unrestricted double) = %+v, want %+v", unrestricted, want)
+	}
+	if restricted != unrestricted {
+		t.Errorf("MapType(double) != MapType(unrestricted double): %+v vs %+v", restricted, unrestricted)
 	}
 }
 
