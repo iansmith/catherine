@@ -356,3 +356,93 @@ func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
 		_, _ = m.MapType(idlType)
 	}()
 }
+
+// ---------------------------------------------------------------------------
+// CATH-44: Scalar primitive type mappings
+// ---------------------------------------------------------------------------
+
+// TestMapTypeScalarExact verifies every IDL primitive scalar base maps to the
+// correct predeclared Go type. Note: "octet" is the WebIDL unsigned-byte type
+// (the ticket table labels it "unsigned byte" informally).
+func TestMapTypeScalarExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	tests := []struct {
+		base string
+		want string
+	}{
+		{"boolean", "bool"},
+		{"byte", "int8"},
+		{"octet", "uint8"},
+		{"short", "int16"},
+		{"unsigned short", "uint16"},
+		{"long", "int32"},
+		{"unsigned long", "uint32"},
+		{"long long", "int64"},
+		{"unsigned long long", "uint64"},
+		{"float", "float32"},
+		{"unrestricted float", "float32"},
+		{"double", "float64"},
+		{"unrestricted double", "float64"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.base, func(t *testing.T) {
+			t.Parallel()
+			idlType := &webidl.IDLType{Base: tc.base}
+			got, err := m.MapType(idlType)
+			if err != nil {
+				t.Fatalf("MapType(%q) returned error: %v", tc.base, err)
+			}
+			if got.Name != tc.want {
+				t.Errorf("MapType(%q).Name = %q, want %q", tc.base, got.Name, tc.want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\" (predeclared type)", tc.base, got.PkgPath)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", tc.base)
+			}
+		})
+	}
+}
+
+// TestMapTypeScalarNullableBecomesPointer verifies that nullable scalar IDL
+// types produce GoType.Pointer == true (T → *T).
+func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	tests := []struct {
+		base string
+		want string
+	}{
+		{"boolean", "bool"},
+		{"byte", "int8"},
+		{"octet", "uint8"},
+		{"short", "int16"},
+		{"unsigned short", "uint16"},
+		{"long", "int32"},
+		{"unsigned long", "uint32"},
+		{"long long", "int64"},
+		{"unsigned long long", "uint64"},
+		{"float", "float32"},
+		{"unrestricted float", "float32"},
+		{"double", "float64"},
+		{"unrestricted double", "float64"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.base, func(t *testing.T) {
+			t.Parallel()
+			idlType := &webidl.IDLType{Base: tc.base, Nullable: true}
+			got, err := m.MapType(idlType)
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", tc.base, err)
+			}
+			if got.Name != tc.want {
+				t.Errorf("MapType(%q?).Name = %q, want %q", tc.base, got.Name, tc.want)
+			}
+			if !got.Pointer {
+				t.Errorf("MapType(%q?).Pointer = false, want true for nullable scalar", tc.base)
+			}
+		})
+	}
+}
