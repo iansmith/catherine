@@ -282,6 +282,61 @@ func TestMapTypeGenericFrozenArrayNoError(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// pkgQualifier / versioned module paths (fix for path.Base bug)
+// ---------------------------------------------------------------------------
+
+// gopkg.in-style versioned path: last segment contains a dot ("yaml.v3").
+func TestGoTypeStringVersionedDotPkgPath(t *testing.T) {
+	t.Parallel()
+	gt := GoType{PkgPath: "gopkg.in/yaml.v3", Name: "Node"}
+	if got := gt.String(); got != "yaml.Node" {
+		t.Errorf("GoType{PkgPath:\"gopkg.in/yaml.v3\",Name:\"Node\"}.String() = %q, want %q", got, "yaml.Node")
+	}
+}
+
+// github.com-style major-version path: last segment is a bare "vN" directory.
+func TestGoTypeStringMajorVersionPkgPath(t *testing.T) {
+	t.Parallel()
+	gt := GoType{PkgPath: "github.com/user/repo/v2", Name: "Client"}
+	if got := gt.String(); got != "repo.Client" {
+		t.Errorf("GoType{PkgPath:\"github.com/user/repo/v2\",Name:\"Client\"}.String() = %q, want %q", got, "repo.Client")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MapType — malformed node guard (Union + Generic both set)
+// ---------------------------------------------------------------------------
+
+func TestMapTypeUnionAndGenericBothSetReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Union:    true,
+		Generic:  "sequence",
+		Subtypes: []*webidl.IDLType{{Base: "long"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(Union=true, Generic=\"sequence\") expected error for malformed node, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mapper value-receiver ergonomics
+// ---------------------------------------------------------------------------
+
+// Mapper zero value can be used via a named variable — no initializer needed.
+// (Separate from the pointer-receiver compile-time check handled by the Go compiler.)
+func TestMapperZeroValueUsable(t *testing.T) {
+	t.Parallel()
+	var m Mapper
+	_, err := m.MapType(&webidl.IDLType{Base: "boolean"})
+	if err != nil {
+		t.Fatalf("var m Mapper; m.MapType(boolean) returned error: %v", err)
+	}
+}
+
 // async_sequence is rejected by validate.go but may still arrive; must not panic.
 func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
 	t.Parallel()

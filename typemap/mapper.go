@@ -3,6 +3,7 @@ package typemap
 import (
 	"fmt"
 	"path"
+	"strings"
 
 	"github.com/iansmith/webidl/webidl"
 )
@@ -35,7 +36,7 @@ func (g GoType) String() string {
 	if g.PkgPath == "" {
 		return prefix + g.Name
 	}
-	return prefix + path.Base(g.PkgPath) + "." + g.Name
+	return prefix + pkgQualifier(g.PkgPath) + "." + g.Name
 }
 
 // Mapper translates *webidl.IDLType values from the resolved IR into GoType
@@ -47,17 +48,20 @@ func (g GoType) String() string {
 // added by later tickets.
 type Mapper struct{}
 
-// MapType maps a single IDLType to a GoType. Returns an error if t is nil or
-// if t carries no recognisable type information (Union=false, Generic="",
-// Base=""). Stubs for the individual type families will be replaced in
-// follow-on tickets (CATH-44 through CATH-48).
-func (m *Mapper) MapType(t *webidl.IDLType) (GoType, error) {
+// MapType maps a single IDLType to a GoType. Returns an error if t is nil,
+// if t has both Union and Generic set (malformed node), or if t carries no
+// recognisable type information (Union=false, Generic="", Base=""). Stubs for
+// the individual type families will be replaced in follow-on tickets
+// (CATH-44 through CATH-48).
+func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	if t == nil {
 		return GoType{}, fmt.Errorf("MapType: nil IDLType")
 	}
 
 	var got GoType
 	switch {
+	case t.Union && t.Generic != "":
+		return GoType{}, fmt.Errorf("MapType: IDLType has both Union and Generic set (malformed node)")
 	case t.Union:
 		got = stubUnion(t)
 	case t.Generic != "":
@@ -111,4 +115,39 @@ var valueTypeNames = map[string]bool{
 
 func isValueType(g GoType) bool {
 	return g.PkgPath == "" && valueTypeNames[g.Name]
+}
+
+// pkgQualifier derives the Go package qualifier (the short name written in
+// source code) from a Go import path. It handles two versioned-module patterns
+// that path.Base alone gets wrong:
+//
+//   - gopkg.in/yaml.v3  → last segment "yaml.v3"; strips after the first dot → "yaml"
+//   - github.com/u/r/v2 → last segment "v2" (a bare major-version dir); uses the
+//     preceding segment → "r"
+//
+// For unversioned paths (net/http, github.com/iansmith/webidl/webidl) the result
+// is the same as path.Base.
+func pkgQualifier(importPath string) string {
+	seg := path.Base(importPath)
+	if isMajorVersionSegment(seg) {
+		seg = path.Base(path.Dir(importPath))
+	}
+	if i := strings.Index(seg, "."); i != -1 {
+		seg = seg[:i]
+	}
+	return seg
+}
+
+// isMajorVersionSegment reports whether s is a bare Go major-version directory
+// name ("v2", "v3", …). These are not valid package qualifiers on their own.
+func isMajorVersionSegment(s string) bool {
+	if len(s) < 2 || s[0] != 'v' {
+		return false
+	}
+	for _, c := range s[1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
