@@ -53,6 +53,10 @@ type Mapper struct{}
 // recognisable type information (Union=false, Generic="", Base=""). Stubs for
 // union and generic type families will be replaced in follow-on tickets
 // (CATH-45 through CATH-48).
+//
+// Note: a nil error does not guarantee a fully-resolved type. Base types not
+// yet handled by this mapper (string types, interface names, etc.) return
+// GoType{Name:"any"} with no error until their respective tickets land.
 func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	if t == nil {
 		return GoType{}, fmt.Errorf("MapType: nil IDLType")
@@ -124,7 +128,6 @@ func mapBase(t *webidl.IDLType) GoType {
 // pointer layer.
 var valueTypeNames = map[string]bool{
 	"bool":    true,
-	"byte":    true,
 	"rune":    true,
 	"int":     true,
 	"int8":    true,

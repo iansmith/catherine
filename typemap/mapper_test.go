@@ -361,31 +361,33 @@ func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
 // CATH-44: Scalar primitive type mappings
 // ---------------------------------------------------------------------------
 
+// scalarMappings is the canonical IDL-base → Go-type table for all 13 scalar
+// primitives. Shared by TestMapTypeScalarExact and TestMapTypeScalarNullableBecomesPointer.
+var scalarMappings = []struct {
+	base, want string
+}{
+	{"boolean", "bool"},
+	{"byte", "int8"},
+	{"octet", "uint8"},
+	{"short", "int16"},
+	{"unsigned short", "uint16"},
+	{"long", "int32"},
+	{"unsigned long", "uint32"},
+	{"long long", "int64"},
+	{"unsigned long long", "uint64"},
+	{"float", "float32"},
+	{"unrestricted float", "float32"},
+	{"double", "float64"},
+	{"unrestricted double", "float64"},
+}
+
 // TestMapTypeScalarExact verifies every IDL primitive scalar base maps to the
 // correct predeclared Go type. Note: "octet" is the WebIDL unsigned-byte type
 // (the ticket table labels it "unsigned byte" informally).
 func TestMapTypeScalarExact(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	tests := []struct {
-		base string
-		want string
-	}{
-		{"boolean", "bool"},
-		{"byte", "int8"},
-		{"octet", "uint8"},
-		{"short", "int16"},
-		{"unsigned short", "uint16"},
-		{"long", "int32"},
-		{"unsigned long", "uint32"},
-		{"long long", "int64"},
-		{"unsigned long long", "uint64"},
-		{"float", "float32"},
-		{"unrestricted float", "float32"},
-		{"double", "float64"},
-		{"unrestricted double", "float64"},
-	}
-	for _, tc := range tests {
+	for _, tc := range scalarMappings {
 		t.Run(tc.base, func(t *testing.T) {
 			t.Parallel()
 			idlType := &webidl.IDLType{Base: tc.base}
@@ -430,9 +432,6 @@ func TestMapTypeUnrestrictedFloatIdenticalToFloat(t *testing.T) {
 	if unrestricted != want {
 		t.Errorf("MapType(unrestricted float) = %+v, want %+v", unrestricted, want)
 	}
-	if restricted != unrestricted {
-		t.Errorf("MapType(float) != MapType(unrestricted float): %+v vs %+v", restricted, unrestricted)
-	}
 }
 
 // TestMapTypeUnrestrictedDoubleIdenticalToDouble verifies that "double" and
@@ -455,9 +454,6 @@ func TestMapTypeUnrestrictedDoubleIdenticalToDouble(t *testing.T) {
 	if unrestricted != want {
 		t.Errorf("MapType(unrestricted double) = %+v, want %+v", unrestricted, want)
 	}
-	if restricted != unrestricted {
-		t.Errorf("MapType(double) != MapType(unrestricted double): %+v vs %+v", restricted, unrestricted)
-	}
 }
 
 // TestMapTypeScalarNullableBecomesPointer verifies that nullable scalar IDL
@@ -465,25 +461,7 @@ func TestMapTypeUnrestrictedDoubleIdenticalToDouble(t *testing.T) {
 func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	tests := []struct {
-		base string
-		want string
-	}{
-		{"boolean", "bool"},
-		{"byte", "int8"},
-		{"octet", "uint8"},
-		{"short", "int16"},
-		{"unsigned short", "uint16"},
-		{"long", "int32"},
-		{"unsigned long", "uint32"},
-		{"long long", "int64"},
-		{"unsigned long long", "uint64"},
-		{"float", "float32"},
-		{"unrestricted float", "float32"},
-		{"double", "float64"},
-		{"unrestricted double", "float64"},
-	}
-	for _, tc := range tests {
+	for _, tc := range scalarMappings {
 		t.Run(tc.base, func(t *testing.T) {
 			t.Parallel()
 			idlType := &webidl.IDLType{Base: tc.base, Nullable: true}
@@ -493,6 +471,9 @@ func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 			}
 			if got.Name != tc.want {
 				t.Errorf("MapType(%q?).Name = %q, want %q", tc.base, got.Name, tc.want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (predeclared type)", tc.base, got.PkgPath)
 			}
 			if !got.Pointer {
 				t.Errorf("MapType(%q?).Pointer = false, want true for nullable scalar", tc.base)
