@@ -356,3 +356,114 @@ func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
 		_, _ = m.MapType(idlType)
 	}()
 }
+
+// ---------------------------------------------------------------------------
+// CATH-44: Scalar primitive type mappings
+// ---------------------------------------------------------------------------
+
+// TestScalarGoTypesAllValuesInValueTypeNames enforces that every Go type name
+// produced by scalarGoTypes appears in valueTypeNames. Without this invariant,
+// adding a new IDL scalar mapping without updating valueTypeNames would silently
+// break nullable pointer promotion for that type.
+func TestScalarGoTypesAllValuesInValueTypeNames(t *testing.T) {
+	t.Parallel()
+	for base, goName := range scalarGoTypes {
+		if !valueTypeNames[goName] {
+			t.Errorf("scalarGoTypes[%q]=%q not in valueTypeNames; nullable scalar would silently skip pointer promotion", base, goName)
+		}
+	}
+}
+
+// TestMapTypeScalarExact verifies every IDL primitive scalar base maps to the
+// correct predeclared Go type.
+func TestMapTypeScalarExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range scalarGoTypes {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base})
+			if err != nil {
+				t.Fatalf("MapType(%q) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\" (predeclared type)", base, got.PkgPath)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
+			}
+		})
+	}
+}
+
+// TestMapTypeUnrestrictedFloatIdenticalToFloat verifies that "float" and
+// "unrestricted float" map to the same GoType struct in every field.
+func TestMapTypeUnrestrictedFloatIdenticalToFloat(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	restricted, err := m.MapType(&webidl.IDLType{Base: "float"})
+	if err != nil {
+		t.Fatalf("MapType(float) error: %v", err)
+	}
+	unrestricted, err := m.MapType(&webidl.IDLType{Base: "unrestricted float"})
+	if err != nil {
+		t.Fatalf("MapType(unrestricted float) error: %v", err)
+	}
+	want := GoType{Name: "float32"}
+	if restricted != want {
+		t.Errorf("MapType(float) = %+v, want %+v", restricted, want)
+	}
+	if unrestricted != want {
+		t.Errorf("MapType(unrestricted float) = %+v, want %+v", unrestricted, want)
+	}
+}
+
+// TestMapTypeUnrestrictedDoubleIdenticalToDouble verifies that "double" and
+// "unrestricted double" map to the same GoType struct in every field.
+func TestMapTypeUnrestrictedDoubleIdenticalToDouble(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	restricted, err := m.MapType(&webidl.IDLType{Base: "double"})
+	if err != nil {
+		t.Fatalf("MapType(double) error: %v", err)
+	}
+	unrestricted, err := m.MapType(&webidl.IDLType{Base: "unrestricted double"})
+	if err != nil {
+		t.Fatalf("MapType(unrestricted double) error: %v", err)
+	}
+	want := GoType{Name: "float64"}
+	if restricted != want {
+		t.Errorf("MapType(double) = %+v, want %+v", restricted, want)
+	}
+	if unrestricted != want {
+		t.Errorf("MapType(unrestricted double) = %+v, want %+v", unrestricted, want)
+	}
+}
+
+// TestMapTypeScalarNullableBecomesPointer verifies that nullable scalar IDL
+// types produce GoType.Pointer == true (T → *T).
+func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range scalarGoTypes {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (predeclared type)", base, got.PkgPath)
+			}
+			if !got.Pointer {
+				t.Errorf("MapType(%q?).Pointer = false, want true for nullable scalar", base)
+			}
+		})
+	}
+}
