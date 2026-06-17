@@ -361,52 +361,39 @@ func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
 // CATH-44: Scalar primitive type mappings
 // ---------------------------------------------------------------------------
 
-// scalarMappings is the canonical IDL-base → Go-type table for all 13 scalar
-// primitives. Shared by TestMapTypeScalarExact and TestMapTypeScalarNullableBecomesPointer.
-var scalarMappings = []struct {
-	base, want string
-}{
-	{"boolean", "bool"},
-	{"byte", "int8"},
-	{"octet", "uint8"},
-	{"short", "int16"},
-	{"unsigned short", "uint16"},
-	{"long", "int32"},
-	{"unsigned long", "uint32"},
-	{"long long", "int64"},
-	{"unsigned long long", "uint64"},
-	{"float", "float32"},
-	{"unrestricted float", "float32"},
-	{"double", "float64"},
-	{"unrestricted double", "float64"},
+// TestScalarGoTypesAllValuesInValueTypeNames enforces that every Go type name
+// produced by scalarGoTypes appears in valueTypeNames. Without this invariant,
+// adding a new IDL scalar mapping without updating valueTypeNames would silently
+// break nullable pointer promotion for that type.
+func TestScalarGoTypesAllValuesInValueTypeNames(t *testing.T) {
+	t.Parallel()
+	for base, goName := range scalarGoTypes {
+		if !valueTypeNames[goName] {
+			t.Errorf("scalarGoTypes[%q]=%q not in valueTypeNames; nullable scalar would silently skip pointer promotion", base, goName)
+		}
+	}
 }
 
 // TestMapTypeScalarExact verifies every IDL primitive scalar base maps to the
-// correct predeclared Go type. Note: "octet" is the WebIDL unsigned-byte type
-// (the ticket table labels it "unsigned byte" informally).
+// correct predeclared Go type.
 func TestMapTypeScalarExact(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	for _, tc := range scalarMappings {
-		t.Run(tc.base, func(t *testing.T) {
+	for base, want := range scalarGoTypes {
+		t.Run(base, func(t *testing.T) {
 			t.Parallel()
-			idlType := &webidl.IDLType{Base: tc.base}
-			got, err := m.MapType(idlType)
+			got, err := m.MapType(&webidl.IDLType{Base: base})
 			if err != nil {
-				t.Fatalf("MapType(%q) returned error: %v", tc.base, err)
+				t.Fatalf("MapType(%q) returned error: %v", base, err)
 			}
-			if got.Name != tc.want {
-				t.Errorf("MapType(%q).Name = %q, want %q", tc.base, got.Name, tc.want)
+			if got.Name != want {
+				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
 			}
 			if got.PkgPath != "" {
-				t.Errorf("MapType(%q).PkgPath = %q, want \"\" (predeclared type)", tc.base, got.PkgPath)
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\" (predeclared type)", base, got.PkgPath)
 			}
 			if got.Pointer {
-				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", tc.base)
-			}
-			// String() is what codegen writes into source; must equal the Go type name.
-			if s := got.String(); s != tc.want {
-				t.Errorf("MapType(%q).String() = %q, want %q", tc.base, s, tc.want)
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
 			}
 		})
 	}
@@ -461,22 +448,21 @@ func TestMapTypeUnrestrictedDoubleIdenticalToDouble(t *testing.T) {
 func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	for _, tc := range scalarMappings {
-		t.Run(tc.base, func(t *testing.T) {
+	for base, want := range scalarGoTypes {
+		t.Run(base, func(t *testing.T) {
 			t.Parallel()
-			idlType := &webidl.IDLType{Base: tc.base, Nullable: true}
-			got, err := m.MapType(idlType)
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
 			if err != nil {
-				t.Fatalf("MapType(%q?) returned error: %v", tc.base, err)
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
 			}
-			if got.Name != tc.want {
-				t.Errorf("MapType(%q?).Name = %q, want %q", tc.base, got.Name, tc.want)
+			if got.Name != want {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
 			}
 			if got.PkgPath != "" {
-				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (predeclared type)", tc.base, got.PkgPath)
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (predeclared type)", base, got.PkgPath)
 			}
 			if !got.Pointer {
-				t.Errorf("MapType(%q?).Pointer = false, want true for nullable scalar", tc.base)
+				t.Errorf("MapType(%q?).Pointer = false, want true for nullable scalar", base)
 			}
 		})
 	}

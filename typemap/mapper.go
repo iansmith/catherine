@@ -127,7 +127,10 @@ func mapBase(t *webidl.IDLType) GoType {
 // (interfaces, slices, maps) are already nil-able and must not gain an extra
 // pointer layer.
 var valueTypeNames = map[string]bool{
-	"bool":    true,
+	"bool": true,
+	// "byte" is intentionally absent: mapBase never emits Name="byte"
+	// (IDL "byte"→int8, IDL "octet"→uint8). If you add a path that emits
+	// Name="byte", add it here too or nullable promotion will be silently skipped.
 	"rune":    true,
 	"int":     true,
 	"int8":    true,
