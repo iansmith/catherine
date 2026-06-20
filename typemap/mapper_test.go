@@ -636,3 +636,111 @@ func TestMapTypeSpecialTypesExact(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CATH-45: Adversary gap tests
+// ---------------------------------------------------------------------------
+
+// TestStringTypesValueNameInvariant enforces that all string bases map to a Go
+// value type (must appear in valueTypeNames so nullable → pointer promotion fires),
+// and all special bases map to a reference type (must NOT appear in valueTypeNames).
+func TestStringTypesValueNameInvariant(t *testing.T) {
+	t.Parallel()
+	for base, goName := range stringTypeBases {
+		if !valueTypeNames[goName] {
+			t.Errorf("stringTypeBases[%q]=%q not in valueTypeNames; nullable string type would silently skip pointer promotion", base, goName)
+		}
+	}
+	for base, goName := range specialTypeBases {
+		if valueTypeNames[goName] {
+			t.Errorf("specialTypeBases[%q]=%q is in valueTypeNames; nullable special type would incorrectly gain a pointer", base, goName)
+		}
+	}
+}
+
+// TestStringAndSpecialBasesAbsentFromScalarGoTypes guards against accidentally
+// adding DOMString/USVString/etc to scalarGoTypes, which would make the mapping
+// appear correct in tests while routing through the wrong dispatch branch.
+func TestStringAndSpecialBasesAbsentFromScalarGoTypes(t *testing.T) {
+	t.Parallel()
+	for base := range stringTypeBases {
+		if _, ok := scalarGoTypes[base]; ok {
+			t.Errorf("scalarGoTypes contains %q; string-type bases must not be in the scalar map (wrong dispatch path)", base)
+		}
+	}
+	for base := range specialTypeBases {
+		if _, ok := scalarGoTypes[base]; ok {
+			t.Errorf("scalarGoTypes contains %q; special-type bases must not be in the scalar map (wrong dispatch path)", base)
+		}
+	}
+}
+
+// TestMapTypeByteStringMapsToStringNotBytes is a standalone contract test for the
+// ByteString design decision: ByteString → string (not []byte). See CATH-45.
+func TestMapTypeByteStringMapsToStringNotBytes(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	want := GoType{Name: "string"}
+	got, err := m.MapType(&webidl.IDLType{Base: "ByteString"})
+	if err != nil {
+		t.Fatalf("MapType(ByteString) returned error: %v", err)
+	}
+	if got != want {
+		t.Errorf("MapType(ByteString) = %+v, want %+v (must be string, not []byte)", got, want)
+	}
+	wantNullable := GoType{Name: "string", Pointer: true}
+	gotNullable, err := m.MapType(&webidl.IDLType{Base: "ByteString", Nullable: true})
+	if err != nil {
+		t.Fatalf("MapType(ByteString?) returned error: %v", err)
+	}
+	if gotNullable != wantNullable {
+		t.Errorf("MapType(ByteString?) = %+v, want %+v", gotNullable, wantNullable)
+	}
+}
+
+// TestMapTypeSpecialTypeNullablePkgPathEmpty verifies nullable special types still
+// produce no package path (any is predeclared, never from an import).
+func TestMapTypeSpecialTypeNullablePkgPathEmpty(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base := range specialTypeBases {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (any is predeclared)", base, got.PkgPath)
+			}
+		})
+	}
+}
+
+// TestMapTypeVoidMapsToAny documents that void (legacy no-value sentinel) maps to
+// Go any. The codegen layer handles the "omit return type" concern above this level.
+func TestMapTypeVoidMapsToAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	got, err := m.MapType(&webidl.IDLType{Base: "void"})
+	if err != nil {
+		t.Fatalf("MapType(void) returned error: %v", err)
+	}
+	if got != (GoType{Name: "any"}) {
+		t.Errorf("MapType(void) = %+v, want GoType{Name:\"any\"}", got)
+	}
+}
+
+// TestMapTypeUndefinedMapsToAny documents that undefined (no-value sentinel) maps
+// to Go any. In return position the codegen layer omits the return type.
+func TestMapTypeUndefinedMapsToAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	got, err := m.MapType(&webidl.IDLType{Base: "undefined"})
+	if err != nil {
+		t.Fatalf("MapType(undefined) returned error: %v", err)
+	}
+	if got != (GoType{Name: "any"}) {
+		t.Errorf("MapType(undefined) = %+v, want GoType{Name:\"any\"}", got)
+	}
+}
