@@ -467,3 +467,172 @@ func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CATH-45: String and special/sentinel type mappings — Phase 0 red tests
+// ---------------------------------------------------------------------------
+
+// stringTypeBases maps IDL string type bases to their expected Go type name.
+// ByteString maps to string (not []byte); see CATH-45 for the decision record.
+var stringTypeBases = map[string]string{
+	"DOMString":   "string",
+	"USVString":   "string",
+	"ByteString":  "string",
+	"CppJSString": "string",
+}
+
+// specialTypeBases maps IDL special/sentinel type bases to their expected Go type name.
+// undefined and void are "no value" sentinels; codegen handles them at a higher level.
+var specialTypeBases = map[string]string{
+	"any":       "any",
+	"object":    "any",
+	"undefined": "any",
+	"void":      "any",
+}
+
+// --- Edge / boundary ---
+
+// TestMapTypeStringTypeNullableBecomesPointer verifies nullable IDL string types
+// produce GoType.Pointer == true (string is a value type in Go).
+func TestMapTypeStringTypeNullableBecomesPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range stringTypeBases {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
+			}
+			if !got.Pointer {
+				t.Errorf("MapType(%q?).Pointer = false, want true (string is a value type)", base)
+			}
+		})
+	}
+}
+
+// TestMapTypeSpecialTypeNullableNoPointer verifies nullable IDL special types do NOT
+// gain a pointer: `any` is a reference type already nil-able, so T? → T (no *T).
+func TestMapTypeSpecialTypeNullableNoPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range specialTypeBases {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q?).Pointer = true, want false (any is a reference type)", base)
+			}
+		})
+	}
+}
+
+// --- Error / rejection ---
+
+// TestMapTypeUnknownBaseStillFallsThrough ensures that adding explicit string/special
+// maps does not break the existing fallback for unrecognised bases (interface names, etc.).
+func TestMapTypeUnknownBaseStillFallsThrough(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	// "EventTarget" is a WebIDL interface name — not a scalar, string, or special type.
+	got, err := m.MapType(&webidl.IDLType{Base: "EventTarget"})
+	if err != nil {
+		t.Fatalf("MapType(EventTarget) returned error: %v", err)
+	}
+	if got.Name == "" {
+		t.Error("MapType(EventTarget) returned GoType with empty Name; fallback expected")
+	}
+}
+
+// --- Cross-feature interaction ---
+
+// TestMapTypeStringTypeInUnionSubtype verifies that string bases as union subtypes
+// do not cause dispatch errors (the union stub ignores subtypes, but must not panic).
+func TestMapTypeStringTypeInUnionSubtype(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
+	}
+	_, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType((DOMString or long)) returned error: %v", err)
+	}
+}
+
+// TestMapTypeStringTypeInGenericSubtype verifies that string bases inside generic
+// types do not cause dispatch errors.
+func TestMapTypeStringTypeInGenericSubtype(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "sequence",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}},
+	}
+	_, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(sequence<DOMString>) returned error: %v", err)
+	}
+}
+
+// --- Happy path ---
+
+// TestMapTypeStringTypesExact verifies every IDL string type base maps to the
+// predeclared Go string type with no package path and no pointer.
+func TestMapTypeStringTypesExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range stringTypeBases {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base})
+			if err != nil {
+				t.Fatalf("MapType(%q) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\"", base, got.PkgPath)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
+			}
+		})
+	}
+}
+
+// TestMapTypeSpecialTypesExact verifies every IDL special/sentinel type base maps to
+// the predeclared Go `any` type with no package path and no pointer.
+func TestMapTypeSpecialTypesExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range specialTypeBases {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base})
+			if err != nil {
+				t.Fatalf("MapType(%q) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\"", base, got.PkgPath)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
+			}
+		})
+	}
+}
