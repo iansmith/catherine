@@ -469,68 +469,34 @@ func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CATH-45: String and special/sentinel type mappings — Phase 0 red tests
+// CATH-45: String and special/sentinel type mappings
 // ---------------------------------------------------------------------------
-
-// stringTypeBases maps IDL string type bases to their expected Go type name.
-// ByteString maps to string (not []byte); see CATH-45 for the decision record.
-var stringTypeBases = map[string]string{
-	"DOMString":   "string",
-	"USVString":   "string",
-	"ByteString":  "string",
-	"CppJSString": "string",
-}
-
-// specialTypeBases maps IDL special/sentinel type bases to their expected Go type name.
-// undefined and void are "no value" sentinels; codegen handles them at a higher level.
-var specialTypeBases = map[string]string{
-	"any":       "any",
-	"object":    "any",
-	"undefined": "any",
-	"void":      "any",
-}
 
 // --- Edge / boundary ---
 
-// TestMapTypeStringTypeNullableBecomesPointer verifies nullable IDL string types
-// produce GoType.Pointer == true (string is a value type in Go).
-func TestMapTypeStringTypeNullableBecomesPointer(t *testing.T) {
+// TestMapTypeNonScalarBaseNullablePromotion verifies nullable promotion for all
+// string and special/sentinel type bases. string is a value type so T? → *T;
+// any is a reference type so T? → T (no extra pointer). Expected pointer is
+// derived from valueTypeNames, keeping the test in sync with the promotion logic.
+func TestMapTypeNonScalarBaseNullablePromotion(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	for base, want := range stringTypeBases {
+	for base, goName := range nonScalarGoTypes {
 		t.Run(base, func(t *testing.T) {
 			t.Parallel()
 			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
 			if err != nil {
 				t.Fatalf("MapType(%q?) returned error: %v", base, err)
 			}
-			if got.Name != want {
-				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
+			if got.Name != goName {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, goName)
 			}
-			if !got.Pointer {
-				t.Errorf("MapType(%q?).Pointer = false, want true (string is a value type)", base)
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\"", base, got.PkgPath)
 			}
-		})
-	}
-}
-
-// TestMapTypeSpecialTypeNullableNoPointer verifies nullable IDL special types do NOT
-// gain a pointer: `any` is a reference type already nil-able, so T? → T (no *T).
-func TestMapTypeSpecialTypeNullableNoPointer(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	for base, want := range specialTypeBases {
-		t.Run(base, func(t *testing.T) {
-			t.Parallel()
-			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
-			if err != nil {
-				t.Fatalf("MapType(%q?) returned error: %v", base, err)
-			}
-			if got.Name != want {
-				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, want)
-			}
-			if got.Pointer {
-				t.Errorf("MapType(%q?).Pointer = true, want false (any is a reference type)", base)
+			wantPointer := valueTypeNames[goName]
+			if got.Pointer != wantPointer {
+				t.Errorf("MapType(%q?).Pointer = %v, want %v", base, got.Pointer, wantPointer)
 			}
 		})
 	}
@@ -587,37 +553,12 @@ func TestMapTypeStringTypeInGenericSubtype(t *testing.T) {
 
 // --- Happy path ---
 
-// TestMapTypeStringTypesExact verifies every IDL string type base maps to the
-// predeclared Go string type with no package path and no pointer.
-func TestMapTypeStringTypesExact(t *testing.T) {
+// TestMapTypeNonScalarBasesExact verifies every IDL string and special/sentinel type
+// base maps to the correct predeclared Go type with no package path and no pointer.
+func TestMapTypeNonScalarBasesExact(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
-	for base, want := range stringTypeBases {
-		t.Run(base, func(t *testing.T) {
-			t.Parallel()
-			got, err := m.MapType(&webidl.IDLType{Base: base})
-			if err != nil {
-				t.Fatalf("MapType(%q) returned error: %v", base, err)
-			}
-			if got.Name != want {
-				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
-			}
-			if got.PkgPath != "" {
-				t.Errorf("MapType(%q).PkgPath = %q, want \"\"", base, got.PkgPath)
-			}
-			if got.Pointer {
-				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
-			}
-		})
-	}
-}
-
-// TestMapTypeSpecialTypesExact verifies every IDL special/sentinel type base maps to
-// the predeclared Go `any` type with no package path and no pointer.
-func TestMapTypeSpecialTypesExact(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	for base, want := range specialTypeBases {
+	for base, want := range nonScalarGoTypes {
 		t.Run(base, func(t *testing.T) {
 			t.Parallel()
 			got, err := m.MapType(&webidl.IDLType{Base: base})
@@ -641,36 +582,36 @@ func TestMapTypeSpecialTypesExact(t *testing.T) {
 // CATH-45: Adversary gap tests
 // ---------------------------------------------------------------------------
 
-// TestStringTypesValueNameInvariant enforces that all string bases map to a Go
-// value type (must appear in valueTypeNames so nullable → pointer promotion fires),
-// and all special bases map to a reference type (must NOT appear in valueTypeNames).
-func TestStringTypesValueNameInvariant(t *testing.T) {
+// TestNonScalarGoTypesValueNameInvariant enforces that valueTypeNames is consistent
+// with nonScalarGoTypes: string entries must be value types (nullable → *T); any
+// entries must not be (any is already nil-able). A future edit adding a new Go type
+// name to nonScalarGoTypes without classifying it here will fail the default case.
+func TestNonScalarGoTypesValueNameInvariant(t *testing.T) {
 	t.Parallel()
-	for base, goName := range stringTypeBases {
-		if !valueTypeNames[goName] {
-			t.Errorf("stringTypeBases[%q]=%q not in valueTypeNames; nullable string type would silently skip pointer promotion", base, goName)
-		}
-	}
-	for base, goName := range specialTypeBases {
-		if valueTypeNames[goName] {
-			t.Errorf("specialTypeBases[%q]=%q is in valueTypeNames; nullable special type would incorrectly gain a pointer", base, goName)
+	for base, goName := range nonScalarGoTypes {
+		switch goName {
+		case "string":
+			if !valueTypeNames[goName] {
+				t.Errorf("nonScalarGoTypes[%q]=%q not in valueTypeNames; nullable would skip pointer promotion", base, goName)
+			}
+		case "any":
+			if valueTypeNames[goName] {
+				t.Errorf("nonScalarGoTypes[%q]=%q is in valueTypeNames; nullable any would incorrectly gain a pointer", base, goName)
+			}
+		default:
+			t.Errorf("nonScalarGoTypes[%q]=%q is an unclassified Go type; update this test to specify whether it is a value type", base, goName)
 		}
 	}
 }
 
-// TestStringAndSpecialBasesAbsentFromScalarGoTypes guards against accidentally
-// adding DOMString/USVString/etc to scalarGoTypes, which would make the mapping
-// appear correct in tests while routing through the wrong dispatch branch.
-func TestStringAndSpecialBasesAbsentFromScalarGoTypes(t *testing.T) {
+// TestNonScalarBasesAbsentFromScalarGoTypes guards against accidentally adding string
+// or special type bases to scalarGoTypes, which would route them through the wrong
+// dispatch branch while tests still passed.
+func TestNonScalarBasesAbsentFromScalarGoTypes(t *testing.T) {
 	t.Parallel()
-	for base := range stringTypeBases {
+	for base := range nonScalarGoTypes {
 		if _, ok := scalarGoTypes[base]; ok {
-			t.Errorf("scalarGoTypes contains %q; string-type bases must not be in the scalar map (wrong dispatch path)", base)
-		}
-	}
-	for base := range specialTypeBases {
-		if _, ok := scalarGoTypes[base]; ok {
-			t.Errorf("scalarGoTypes contains %q; special-type bases must not be in the scalar map (wrong dispatch path)", base)
+			t.Errorf("scalarGoTypes contains %q; non-scalar bases must not be in the scalar map (wrong dispatch path)", base)
 		}
 	}
 }
@@ -695,52 +636,5 @@ func TestMapTypeByteStringMapsToStringNotBytes(t *testing.T) {
 	}
 	if gotNullable != wantNullable {
 		t.Errorf("MapType(ByteString?) = %+v, want %+v", gotNullable, wantNullable)
-	}
-}
-
-// TestMapTypeSpecialTypeNullablePkgPathEmpty verifies nullable special types still
-// produce no package path (any is predeclared, never from an import).
-func TestMapTypeSpecialTypeNullablePkgPathEmpty(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	for base := range specialTypeBases {
-		t.Run(base, func(t *testing.T) {
-			t.Parallel()
-			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
-			if err != nil {
-				t.Fatalf("MapType(%q?) returned error: %v", base, err)
-			}
-			if got.PkgPath != "" {
-				t.Errorf("MapType(%q?).PkgPath = %q, want \"\" (any is predeclared)", base, got.PkgPath)
-			}
-		})
-	}
-}
-
-// TestMapTypeVoidMapsToAny documents that void (legacy no-value sentinel) maps to
-// Go any. The codegen layer handles the "omit return type" concern above this level.
-func TestMapTypeVoidMapsToAny(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	got, err := m.MapType(&webidl.IDLType{Base: "void"})
-	if err != nil {
-		t.Fatalf("MapType(void) returned error: %v", err)
-	}
-	if got != (GoType{Name: "any"}) {
-		t.Errorf("MapType(void) = %+v, want GoType{Name:\"any\"}", got)
-	}
-}
-
-// TestMapTypeUndefinedMapsToAny documents that undefined (no-value sentinel) maps
-// to Go any. In return position the codegen layer omits the return type.
-func TestMapTypeUndefinedMapsToAny(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	got, err := m.MapType(&webidl.IDLType{Base: "undefined"})
-	if err != nil {
-		t.Fatalf("MapType(undefined) returned error: %v", err)
-	}
-	if got != (GoType{Name: "any"}) {
-		t.Errorf("MapType(undefined) = %+v, want GoType{Name:\"any\"}", got)
 	}
 }
