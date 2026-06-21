@@ -192,6 +192,13 @@ interface I {
 			name: "callback argument",
 			src:  `callback CB = boolean (async_sequence<DOMString> arg);`,
 		},
+		{
+			name: "operation argument",
+			src: `[Exposed=Window]
+interface I {
+  Promise<undefined> f(async_sequence<DOMString> arg);
+};`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

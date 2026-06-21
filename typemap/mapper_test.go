@@ -115,25 +115,6 @@ func TestMapTypeUnionNoError(t *testing.T) {
 	}
 }
 
-func TestMapTypeGenericSequenceNoError(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	idlType := &webidl.IDLType{
-		Generic:  "sequence",
-		Subtypes: []*webidl.IDLType{{Base: "long"}},
-	}
-	got, err := m.MapType(idlType)
-	if err != nil {
-		t.Fatalf("MapType(sequence<long>) returned error: %v", err)
-	}
-	if got.Name == "" {
-		t.Error("MapType(sequence<long>) returned GoType with empty Name")
-	}
-	if !got.Unresolved {
-		t.Error("MapType(sequence<long> stub).Unresolved = false; stub must be marked Unresolved")
-	}
-}
-
 func TestMapTypeGenericRecordNoError(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
@@ -221,27 +202,21 @@ func TestMapTypeNullableGenericNoError(t *testing.T) {
 		Nullable: true,
 		Subtypes: []*webidl.IDLType{{Base: "long"}},
 	}
-	_, err := m.MapType(idlType)
+	got, err := m.MapType(idlType)
 	if err != nil {
 		t.Fatalf("MapType(sequence<long>?) returned error: %v", err)
+	}
+	if got.Name != "[]int32" {
+		t.Errorf("MapType(sequence<long>?).Name = %q, want \"[]int32\"", got.Name)
+	}
+	if got.Pointer {
+		t.Error("MapType(sequence<long>?).Pointer = true; slices are reference types and must not gain an extra pointer layer")
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Cross-feature: nested generics — must not panic, must not error
 // ---------------------------------------------------------------------------
-
-func TestMapTypeNestedSequenceNoError(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	// sequence<sequence<long>>
-	inner := &webidl.IDLType{Generic: "sequence", Subtypes: []*webidl.IDLType{{Base: "long"}}}
-	outer := &webidl.IDLType{Generic: "sequence", Subtypes: []*webidl.IDLType{inner}}
-	_, err := m.MapType(outer)
-	if err != nil {
-		t.Fatalf("MapType(sequence<sequence<long>>) returned error: %v", err)
-	}
-}
 
 func TestMapTypeSequenceOfUnionNoError(t *testing.T) {
 	t.Parallel()
@@ -268,29 +243,14 @@ func TestGoTypeStringEmptyNameWithPkgPath(t *testing.T) {
 	_ = got
 }
 
-// A generic IDLType with no Subtypes at all must not panic (the skeleton does not
-// recurse into subtypes — that is CATH-46's job).
-func TestMapTypeGenericEmptySubtypesNoError(t *testing.T) {
+// A sequence IDLType with no Subtypes is a malformed node — MapType must return an error.
+func TestMapTypeSequenceEmptySubtypesReturnsError(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
 	idlType := &webidl.IDLType{Generic: "sequence", Subtypes: nil}
 	_, err := m.MapType(idlType)
-	if err != nil {
-		t.Fatalf("MapType(sequence with nil Subtypes) returned error: %v", err)
-	}
-}
-
-// FrozenArray is a valid generic keyword; dispatch must handle it.
-func TestMapTypeGenericFrozenArrayNoError(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	idlType := &webidl.IDLType{
-		Generic:  "FrozenArray",
-		Subtypes: []*webidl.IDLType{{Base: "DOMString"}},
-	}
-	_, err := m.MapType(idlType)
-	if err != nil {
-		t.Fatalf("MapType(FrozenArray<DOMString>) returned error: %v", err)
+	if err == nil {
+		t.Error("MapType(sequence with nil Subtypes) expected error for malformed node, got nil")
 	}
 }
 
@@ -347,26 +307,6 @@ func TestMapperZeroValueUsable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("var m Mapper; m.MapType(boolean) returned error: %v", err)
 	}
-}
-
-// async_sequence is rejected by validate.go but may still arrive; must not panic.
-func TestMapTypeGenericAsyncSequenceNoError(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	idlType := &webidl.IDLType{
-		Generic:  "async_sequence",
-		Subtypes: []*webidl.IDLType{{Base: "long"}},
-	}
-	// No assertion on error — async_sequence may legitimately produce a diagnostic.
-	// The requirement is only that MapType does not panic.
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("MapType(async_sequence<long>) panicked: %v", r)
-			}
-		}()
-		_, _ = m.MapType(idlType)
-	}()
 }
 
 // ---------------------------------------------------------------------------
@@ -670,3 +610,116 @@ func TestWebIDLStringTypesCoveredByNonScalarGoTypes(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// CATH-46: Generic sequence type mappings
+// ---------------------------------------------------------------------------
+
+// TestMapTypeSequenceExact verifies that sequence, FrozenArray, and ObservableArray
+// each map to the correct []T Go slice type with Unresolved=false.
+func TestMapTypeSequenceExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	cases := []struct {
+		generic  string
+		elemBase string
+		wantName string
+	}{
+		{"sequence", "long", "[]int32"},
+		{"FrozenArray", "DOMString", "[]string"},
+		{"ObservableArray", "boolean", "[]bool"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.generic+"<"+tc.elemBase+">", func(t *testing.T) {
+			t.Parallel()
+			idlType := &webidl.IDLType{
+				Generic:  tc.generic,
+				Subtypes: []*webidl.IDLType{{Base: tc.elemBase}},
+			}
+			got, err := m.MapType(idlType)
+			if err != nil {
+				t.Fatalf("MapType(%s<%s>) returned error: %v", tc.generic, tc.elemBase, err)
+			}
+			if got.Name != tc.wantName {
+				t.Errorf("MapType(%s<%s>).Name = %q, want %q", tc.generic, tc.elemBase, got.Name, tc.wantName)
+			}
+			if got.Unresolved {
+				t.Errorf("MapType(%s<%s>).Unresolved = true; resolved sequence must not be marked Unresolved", tc.generic, tc.elemBase)
+			}
+		})
+	}
+}
+
+// TestMapTypeSequenceNested verifies that sequence<sequence<boolean>> maps to [][]bool.
+func TestMapTypeSequenceNested(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	inner := &webidl.IDLType{Generic: "sequence", Subtypes: []*webidl.IDLType{{Base: "boolean"}}}
+	outer := &webidl.IDLType{Generic: "sequence", Subtypes: []*webidl.IDLType{inner}}
+	got, err := m.MapType(outer)
+	if err != nil {
+		t.Fatalf("MapType(sequence<sequence<boolean>>) returned error: %v", err)
+	}
+	if got.Name != "[][]bool" {
+		t.Errorf("MapType(sequence<sequence<boolean>>).Name = %q, want \"[][]bool\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(sequence<sequence<boolean>>).Unresolved = true; resolved nested sequence must not be marked Unresolved")
+	}
+}
+
+// TestMapTypeSequenceUnresolvedElement verifies that sequence<EventTarget> maps to
+// []any with Unresolved=true, propagating the element's unresolved state.
+func TestMapTypeSequenceUnresolvedElement(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "sequence",
+		Subtypes: []*webidl.IDLType{{Base: "EventTarget"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(sequence<EventTarget>) returned error: %v", err)
+	}
+	if got.Name != "[]any" {
+		t.Errorf("MapType(sequence<EventTarget>).Name = %q, want \"[]any\"", got.Name)
+	}
+	if !got.Unresolved {
+		t.Error("MapType(sequence<EventTarget>).Unresolved = false; unresolved element must propagate Unresolved to the slice")
+	}
+}
+
+// TestMapTypeSequenceNullableElement verifies that sequence<boolean?> maps to []*bool:
+// the nullable element becomes *bool, and the slice wraps it as []*bool.
+func TestMapTypeSequenceNullableElement(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "sequence",
+		Subtypes: []*webidl.IDLType{{Base: "boolean", Nullable: true}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(sequence<boolean?>) returned error: %v", err)
+	}
+	if got.Name != "[]*bool" {
+		t.Errorf("MapType(sequence<boolean?>).Name = %q, want \"[]*bool\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(sequence<boolean?>).Unresolved = true; resolved sequence must not be marked Unresolved")
+	}
+}
+
+// TestMapTypeAsyncSequenceReturnsError verifies that async_sequence produces an error
+// (it is IDL-to-JS only and should have been rejected by validate.go).
+func TestMapTypeAsyncSequenceReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "async_sequence",
+		Subtypes: []*webidl.IDLType{{Base: "long"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(async_sequence<long>) expected error (IDL-to-JS only), got nil")
+	}
+}

@@ -78,7 +78,11 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	case t.Union:
 		got = stubUnion(t)
 	case t.Generic != "":
-		got = stubGeneric(t)
+		var genErr error
+		got, genErr = m.mapGeneric(t)
+		if genErr != nil {
+			return GoType{}, genErr
+		}
 	case t.Base != "":
 		got = mapBase(t)
 	default:
@@ -95,11 +99,39 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Stubs — replaced by real implementations in CATH-46 through CATH-48
+// Generic and union resolution
 // ---------------------------------------------------------------------------
 
-func stubUnion(_ *webidl.IDLType) GoType   { return GoType{Name: "any", Unresolved: true} }
-func stubGeneric(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
+// stubUnion is a placeholder for union resolution, replaced by the real
+// implementation in a follow-on ticket (CATH-47).
+func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
+
+// mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
+// IDL sequence-like generics (sequence, FrozenArray, ObservableArray) map to Go
+// slices; async_sequence is IDL-to-JS only and returns an error. Promise, record,
+// and any future generics remain as Unresolved stubs (CATH-48+).
+//
+// FrozenArray and ObservableArray are both mapped to plain []T. FrozenArray is
+// immutable in WebIDL — callers must not mutate the returned slice. ObservableArray
+// mutation side effects (platform observer hooks) are out of scope.
+func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
+	switch t.Generic {
+	case "sequence", "FrozenArray", "ObservableArray":
+		if len(t.Subtypes) == 0 {
+			return GoType{}, fmt.Errorf("MapType: %s has no type parameter", t.Generic)
+		}
+		elem, err := m.MapType(t.Subtypes[0])
+		if err != nil {
+			return GoType{}, fmt.Errorf("%s element: %w", t.Generic, err)
+		}
+		return GoType{Name: "[]" + elem.String(), Unresolved: elem.Unresolved}, nil
+	case "async_sequence":
+		return GoType{}, fmt.Errorf("MapType: async_sequence is IDL-to-JS only and should have been rejected by validate.go")
+	default:
+		// Promise, record, and future generics remain as stubs (CATH-48+).
+		return GoType{Name: "any", Unresolved: true}, nil
+	}
+}
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared
 // type names. "octet" is the WebIDL unsigned-byte primitive (the IDL keyword;
