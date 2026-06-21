@@ -110,6 +110,9 @@ func TestMapTypeUnionNoError(t *testing.T) {
 	if got.Name == "" {
 		t.Error("MapType(union) returned GoType with empty Name")
 	}
+	if !got.Unresolved {
+		t.Error("MapType(union stub).Unresolved = false; stub must be marked Unresolved")
+	}
 }
 
 func TestMapTypeGenericSequenceNoError(t *testing.T) {
@@ -125,6 +128,9 @@ func TestMapTypeGenericSequenceNoError(t *testing.T) {
 	}
 	if got.Name == "" {
 		t.Error("MapType(sequence<long>) returned GoType with empty Name")
+	}
+	if !got.Unresolved {
+		t.Error("MapType(sequence<long> stub).Unresolved = false; stub must be marked Unresolved")
 	}
 }
 
@@ -142,6 +148,9 @@ func TestMapTypeGenericRecordNoError(t *testing.T) {
 	if got.Name == "" {
 		t.Error("MapType(record<DOMString,long>) returned GoType with empty Name")
 	}
+	if !got.Unresolved {
+		t.Error("MapType(record<DOMString,long> stub).Unresolved = false; stub must be marked Unresolved")
+	}
 }
 
 func TestMapTypeGenericPromiseNoError(t *testing.T) {
@@ -157,6 +166,9 @@ func TestMapTypeGenericPromiseNoError(t *testing.T) {
 	}
 	if got.Name == "" {
 		t.Error("MapType(Promise<long>) returned GoType with empty Name")
+	}
+	if !got.Unresolved {
+		t.Error("MapType(Promise<long> stub).Unresolved = false; stub must be marked Unresolved")
 	}
 }
 
@@ -687,5 +699,21 @@ func TestWebIDLStringTypesCoveredByNonScalarGoTypes(t *testing.T) {
 		if nonScalarGoTypes[base] != "string" {
 			t.Errorf("nonScalarGoTypes[%q] = %q, want \"string\"; add it when webidl.StringTypes gains a new entry", base, nonScalarGoTypes[base])
 		}
+	}
+}
+
+// TestMapTypeCSSOMStringMapsToString guards the CSSOMString entry: it is not in
+// webidl.StringTypes (a tokenizer concept), so TestWebIDLStringTypesCoveredByNonScalarGoTypes
+// does not protect it.
+func TestMapTypeCSSOMStringMapsToString(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	want := GoType{Name: "string"}
+	got, err := m.MapType(&webidl.IDLType{Base: "CSSOMString"})
+	if err != nil {
+		t.Fatalf("MapType(CSSOMString) returned error: %v", err)
+	}
+	if got != want {
+		t.Errorf("MapType(CSSOMString) = %+v, want %+v", got, want)
 	}
 }

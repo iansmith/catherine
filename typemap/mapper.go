@@ -87,7 +87,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 
 	// Nullable post-processing: T? → *T for value types. Reference types are
 	// already nil-able, so they are left unchanged.
-	if t.Nullable && isValueType(got) {
+	if t.Nullable && !got.Unresolved && isValueType(got) {
 		got.Pointer = true
 	}
 
@@ -148,7 +148,7 @@ var nonScalarGoTypes = map[string]string{
 // mapBase resolves an IDLType with a non-empty Base field to a GoType. Scalar
 // primitive types are mapped via scalarGoTypes; string and special/sentinel
 // types via nonScalarGoTypes. All other base types (interface names, etc.)
-// fall back to GoType{Name: "any"}.
+// fall back to GoType{Name: "any", Unresolved: true}.
 func mapBase(t *webidl.IDLType) GoType {
 	if name, ok := scalarGoTypes[t.Base]; ok {
 		return GoType{Name: name}
