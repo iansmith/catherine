@@ -38,6 +38,7 @@ type memberValidator interface {
 // validateMember implements the incomplete-op rule and async-sequence-idl-to-js:
 //   - regular and static operations must have both a return type and an identifier.
 //   - the return type must not be async_sequence.
+//   - no argument type may be async_sequence.
 //   - no argument type may be a nullable union containing a dictionary.
 func (op *Operation) validateMember(defs *Definitions) []error {
 	var errs []error
@@ -72,6 +73,12 @@ func (op *Operation) validateMember(defs *Definitions) []error {
 	errs = append(errs, checkLegacyExtAttrs(op.ExtAttrs)...)
 
 	for i, arg := range op.Arguments {
+		if arg.IDLType.Generic == "async_sequence" {
+			errs = append(errs, &ValidationError{
+				Rule:    "async-sequence-idl-to-js",
+				Message: "async_sequence types cannot be used as an operation argument.",
+			})
+		}
 		errs = append(errs, validateNullableUnionDict(arg.IDLType, defs)...)
 		errs = append(errs, validateArgDictRules(arg, i, op.Arguments, defs)...)
 		errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
