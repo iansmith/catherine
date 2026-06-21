@@ -25,6 +25,10 @@ type GoType struct {
 	Name       string
 	Pointer    bool
 	Unresolved bool
+	// Annotation carries IDL extended-attribute modifiers that affect codegen
+	// semantics but not the Go type name (e.g. "Clamp", "EnforceRange",
+	// "AllowShared"). Empty when no modifier applies.
+	Annotation string
 }
 
 // String returns the Go source representation of the type — the form that
