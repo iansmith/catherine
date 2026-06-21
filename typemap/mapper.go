@@ -68,7 +68,7 @@ type Mapper struct{}
 // (sequences, record, Promise).
 //
 // Note: a nil error does not guarantee a fully-resolved type. Unrecognised base
-// types and unimplemented generics return GoType{Name:"any", Unresolved:true}
+// types and unrecognised generics return GoType{Name:"any", Unresolved:true}
 // with no error. Intentional mappings (including union→any) return
 // Unresolved:false. Check GoType.Unresolved before emitting code to avoid
 // silently producing any for unmapped names.

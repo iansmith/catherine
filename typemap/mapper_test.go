@@ -289,7 +289,7 @@ func TestMapTypeExtAttrNullableWithClamp(t *testing.T) {
 	idlType := &webidl.IDLType{
 		Base:     "unsigned short",
 		Nullable: true,
-		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrClamp}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -301,7 +301,7 @@ func TestMapTypeExtAttrNullableWithClamp(t *testing.T) {
 	if !got.Pointer {
 		t.Error("MapType([Clamp] unsigned short?).Pointer = false; nullable scalar must be pointer-wrapped")
 	}
-	if got.Annotation != "Clamp" {
+	if got.Annotation != webidl.ExtAttrClamp {
 		t.Errorf("MapType([Clamp] unsigned short?).Annotation = %q, want \"Clamp\"", got.Annotation)
 	}
 }
@@ -315,7 +315,7 @@ func TestMapTypeExtAttrClampPreservesType(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "unsigned short",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrClamp}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -324,7 +324,7 @@ func TestMapTypeExtAttrClampPreservesType(t *testing.T) {
 	if got.Name != "uint16" {
 		t.Errorf("MapType([Clamp] unsigned short).Name = %q, want \"uint16\"", got.Name)
 	}
-	if got.Annotation != "Clamp" {
+	if got.Annotation != webidl.ExtAttrClamp {
 		t.Errorf("MapType([Clamp] unsigned short).Annotation = %q, want \"Clamp\"", got.Annotation)
 	}
 }
@@ -336,7 +336,7 @@ func TestMapTypeExtAttrEnforceRangePreservesType(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "long",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "EnforceRange"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrEnforceRange}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -345,7 +345,7 @@ func TestMapTypeExtAttrEnforceRangePreservesType(t *testing.T) {
 	if got.Name != "int32" {
 		t.Errorf("MapType([EnforceRange] long).Name = %q, want \"int32\"", got.Name)
 	}
-	if got.Annotation != "EnforceRange" {
+	if got.Annotation != webidl.ExtAttrEnforceRange {
 		t.Errorf("MapType([EnforceRange] long).Annotation = %q, want \"EnforceRange\"", got.Annotation)
 	}
 }
@@ -358,13 +358,13 @@ func TestMapTypeExtAttrAllowShared(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "ArrayBuffer",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "AllowShared"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrAllowShared}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
 		t.Fatalf("MapType([AllowShared] ArrayBuffer) returned error: %v", err)
 	}
-	if got.Annotation != "AllowShared" {
+	if got.Annotation != webidl.ExtAttrAllowShared {
 		t.Errorf("MapType([AllowShared] ArrayBuffer).Annotation = %q, want \"AllowShared\"", got.Annotation)
 	}
 }
@@ -419,7 +419,7 @@ func TestMapTypeExtAttrClampOnSignedLong(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "long",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrClamp}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -428,7 +428,7 @@ func TestMapTypeExtAttrClampOnSignedLong(t *testing.T) {
 	if got.Name != "int32" {
 		t.Errorf("MapType([Clamp] long).Name = %q, want \"int32\"", got.Name)
 	}
-	if got.Annotation != "Clamp" {
+	if got.Annotation != webidl.ExtAttrClamp {
 		t.Errorf("MapType([Clamp] long).Annotation = %q, want \"Clamp\"", got.Annotation)
 	}
 }
@@ -439,7 +439,7 @@ func TestMapTypeExtAttrEnforceRangeOnUnsignedLong(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "unsigned long",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "EnforceRange"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrEnforceRange}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -448,7 +448,7 @@ func TestMapTypeExtAttrEnforceRangeOnUnsignedLong(t *testing.T) {
 	if got.Name != "uint32" {
 		t.Errorf("MapType([EnforceRange] unsigned long).Name = %q, want \"uint32\"", got.Name)
 	}
-	if got.Annotation != "EnforceRange" {
+	if got.Annotation != webidl.ExtAttrEnforceRange {
 		t.Errorf("MapType([EnforceRange] unsigned long).Annotation = %q, want \"EnforceRange\"", got.Annotation)
 	}
 }
@@ -459,7 +459,7 @@ func TestMapTypeExtAttrAllowSharedOnResolvedType(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "octet",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "AllowShared"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrAllowShared}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -468,7 +468,7 @@ func TestMapTypeExtAttrAllowSharedOnResolvedType(t *testing.T) {
 	if got.Name != "uint8" {
 		t.Errorf("MapType([AllowShared] octet).Name = %q, want \"uint8\"", got.Name)
 	}
-	if got.Annotation != "AllowShared" {
+	if got.Annotation != webidl.ExtAttrAllowShared {
 		t.Errorf("MapType([AllowShared] octet).Annotation = %q, want \"AllowShared\"", got.Annotation)
 	}
 }
@@ -481,7 +481,7 @@ func TestMapTypeUnionWithClampExtAttrNoAnnotation(t *testing.T) {
 	idlType := &webidl.IDLType{
 		Union:    true,
 		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
-		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrClamp}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
@@ -501,7 +501,7 @@ func TestMapTypeExtAttrAllowSharedBaseTypeIsUnresolvedAny(t *testing.T) {
 	m := Mapper{}
 	idlType := &webidl.IDLType{
 		Base:     "ArrayBuffer",
-		ExtAttrs: []*webidl.ExtAttr{{Name: "AllowShared"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: webidl.ExtAttrAllowShared}},
 	}
 	got, err := m.MapType(idlType)
 	if err != nil {
