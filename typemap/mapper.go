@@ -3,6 +3,7 @@ package typemap
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/iansmith/webidl/webidl"
@@ -108,8 +109,9 @@ func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved
 
 // mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
 // IDL sequence-like generics (sequence, FrozenArray, ObservableArray) map to Go
-// slices; async_sequence is IDL-to-JS only and returns an error. Promise, record,
-// and any future generics remain as Unresolved stubs (CATH-48+).
+// slices; async_sequence is IDL-to-JS only and returns an error. record maps to
+// map[string]V; Promise maps to any (see case "Promise" for the rationale).
+// Other generics remain as Unresolved stubs until a follow-on ticket implements them.
 //
 // FrozenArray and ObservableArray are both mapped to plain []T. FrozenArray is
 // immutable in WebIDL — callers must not mutate the returned slice. ObservableArray
@@ -128,13 +130,14 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 	case "async_sequence":
 		return GoType{}, fmt.Errorf("MapType: async_sequence is IDL-to-JS only and should have been rejected by validate.go")
 	case "record":
-		if len(t.Subtypes) < 2 {
+		if len(t.Subtypes) != 2 {
 			return GoType{}, fmt.Errorf("MapType: record requires exactly 2 type parameters, got %d", len(t.Subtypes))
 		}
-		// WebIDL restricts record key types to DOMString, USVString, or ByteString —
-		// all of which map to Go string. Reject any other base so callers get an
-		// explicit error instead of a silently wrong map key type.
-		if nonScalarGoTypes[t.Subtypes[0].Base] != "string" {
+		// WebIDL §3.2.26 restricts record key types to DOMString, USVString, or
+		// ByteString. Use webidl.StringTypes (the parser's authoritative list) rather
+		// than nonScalarGoTypes, which also contains CSSOMString and would silently
+		// accept an invalid key.
+		if !isRecordKeyType(t.Subtypes[0].Base) {
 			return GoType{}, fmt.Errorf("MapType: record key type must be DOMString, USVString, or ByteString, got %q", t.Subtypes[0].Base)
 		}
 		val, err := m.MapType(t.Subtypes[1])
@@ -151,11 +154,24 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		if len(t.Subtypes) == 0 {
 			return GoType{}, fmt.Errorf("MapType: Promise requires a type parameter")
 		}
+		// Validate the type parameter even though its resolved GoType is discarded.
+		// This surfaces errors in T (e.g. async_sequence, which is IDL-to-JS only)
+		// rather than silently accepting Promise<invalid>.
+		if _, err := m.MapType(t.Subtypes[0]); err != nil {
+			return GoType{}, fmt.Errorf("Promise type parameter: %w", err)
+		}
 		return GoType{Name: "any"}, nil
 	default:
-		// Future generics remain as stubs until a follow-on ticket implements them.
+		// Other generics remain as stubs until a follow-on ticket implements them.
 		return GoType{Name: "any", Unresolved: true}, nil
 	}
+}
+
+// isRecordKeyType reports whether base is a valid WebIDL record key type.
+// Only DOMString, USVString, and ByteString are permitted (WebIDL §3.2.26).
+// Uses webidl.StringTypes as the single source of truth, matching the parser.
+func isRecordKeyType(base string) bool {
+	return slices.Contains(webidl.StringTypes, base)
 }
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared

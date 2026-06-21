@@ -821,6 +821,58 @@ func TestMapTypeRecordOneSubtypeReturnsError(t *testing.T) {
 	}
 }
 
+// TestMapTypeRecordThreeSubtypesReturnsError verifies that a record with 3 subtypes
+// (more than the required exactly-2) returns an error rather than silently ignoring the extra.
+func TestMapTypeRecordThreeSubtypesReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}, {Base: "boolean"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(record with 3 Subtypes) expected error for malformed node (too many type parameters), got nil")
+	}
+}
+
+// TestMapTypeRecordCSSOMStringKeyReturnsError verifies that CSSOMString is rejected as a
+// record key type. The WebIDL spec (§3.2.26) permits only DOMString, USVString, and
+// ByteString; CSSOMString is a string type in the broader mapper but is not a valid
+// record key.
+func TestMapTypeRecordCSSOMStringKeyReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "CSSOMString"}, {Base: "long"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(record<CSSOMString,long>) expected error (CSSOMString not a valid record key per WebIDL §3.2.26), got nil")
+	}
+}
+
+// TestMapTypePromiseInvalidSubtypeReturnsError verifies that an error in the Promise
+// type parameter is propagated rather than silently swallowed. async_sequence is
+// IDL-to-JS only and should produce an error even when nested inside Promise.
+func TestMapTypePromiseInvalidSubtypeReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	asyncSeq := &webidl.IDLType{
+		Generic:  "async_sequence",
+		Subtypes: []*webidl.IDLType{{Base: "long"}},
+	}
+	idlType := &webidl.IDLType{
+		Generic:  "Promise",
+		Subtypes: []*webidl.IDLType{asyncSeq},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(Promise<async_sequence<long>>) expected error (async_sequence is IDL-to-JS only), got nil")
+	}
+}
+
 // --- Cross-feature ---
 
 // TestMapTypeRecordNestedValue verifies recursive value type resolution:
