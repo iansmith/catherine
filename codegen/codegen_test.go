@@ -1,6 +1,8 @@
 package codegen_test
 
 import (
+	"bytes"
+	"go/format"
 	"strings"
 	"testing"
 
@@ -336,5 +338,245 @@ func TestFileWithEmptyImportTrackerOmitsImportBlock(t *testing.T) {
 	}
 	if strings.Contains(string(out), "import") {
 		t.Errorf("File.Render() with empty ImportTracker = %q; must not contain 'import'", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IdentSanitize — adversary gap tests (findings 1, 2, 4, 14)
+// ---------------------------------------------------------------------------
+
+func TestIdentSanitizeLeadingUnderscore(t *testing.T) {
+	t.Parallel()
+	// A leading underscore produces an unexported Go identifier — must be removed/replaced.
+	got := codegen.IdentSanitize("_internal")
+	if len(got) == 0 {
+		t.Fatal(`IdentSanitize("_internal") returned ""`)
+	}
+	if got[0] == '_' {
+		t.Errorf(`IdentSanitize("_internal") = %q; leading underscore must not survive into the exported identifier`, got)
+	}
+	if got[0] < 'A' || got[0] > 'Z' {
+		t.Errorf(`IdentSanitize("_internal") = %q; first rune must be uppercase`, got)
+	}
+}
+
+func TestIdentSanitizeUnderscoreSegments(t *testing.T) {
+	t.Parallel()
+	// IDL sometimes uses underscore as a word separator; underscores must not appear in Go identifiers.
+	got := codegen.IdentSanitize("css_float_value")
+	if strings.Contains(got, "_") {
+		t.Errorf(`IdentSanitize("css_float_value") = %q; underscores must not appear in result`, got)
+	}
+	if len(got) == 0 {
+		t.Fatal(`IdentSanitize("css_float_value") returned ""`)
+	}
+	if got[0] < 'A' || got[0] > 'Z' {
+		t.Errorf(`IdentSanitize("css_float_value") = %q; first rune must be uppercase`, got)
+	}
+}
+
+func TestIdentSanitizeSingleLowercaseLetter(t *testing.T) {
+	t.Parallel()
+	got := codegen.IdentSanitize("x")
+	if len(got) == 0 {
+		t.Fatal(`IdentSanitize("x") returned ""`)
+	}
+	if got[0] < 'A' || got[0] > 'Z' {
+		t.Errorf(`IdentSanitize("x") = %q; must be exported (uppercase first rune)`, got)
+	}
+}
+
+func TestIdentSanitizeSingleHyphen(t *testing.T) {
+	t.Parallel()
+	// A bare hyphen has no word content; must not panic and must produce a valid non-empty identifier.
+	got := codegen.IdentSanitize("-")
+	if got == "" {
+		t.Error(`IdentSanitize("-") returned ""; must produce a non-empty fallback identifier`)
+	}
+	if strings.Contains(got, "-") {
+		t.Errorf(`IdentSanitize("-") = %q; must not contain a hyphen`, got)
+	}
+}
+
+func TestIdentSanitizeAcronymPreservationBroad(t *testing.T) {
+	t.Parallel()
+	// Tests that all-caps acronyms pass through unchanged — not just "URL".
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"HTML", "HTML"},
+		{"SVG", "SVG"},
+		{"WebGL", "WebGL"},
+		{"XMLHttpRequest", "XMLHttpRequest"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.in, func(t *testing.T) {
+			t.Parallel()
+			got := codegen.IdentSanitize(tc.in)
+			if got != tc.want {
+				t.Errorf("IdentSanitize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIdentSanitizePredeclaredIdentifiers(t *testing.T) {
+	t.Parallel()
+	// Predeclared identifiers are not Go keywords but shadowing them in generated code causes subtle bugs.
+	predeclared := []string{"true", "false", "nil", "error", "string", "int", "append", "make", "new", "len", "cap"}
+	for _, name := range predeclared {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := codegen.IdentSanitize(name)
+			if got == name {
+				t.Errorf("IdentSanitize(%q) = %q; predeclared identifier must be transformed to avoid shadowing built-ins", name, got)
+			}
+			if len(got) == 0 {
+				t.Errorf("IdentSanitize(%q) returned empty string", name)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics — adversary gap tests (findings 5, 7, 8)
+// ---------------------------------------------------------------------------
+
+func TestDiagnosticsWarningAppearsInFormat(t *testing.T) {
+	t.Parallel()
+	// Verifies warnings are actually stored, not silently dropped.
+	d := codegen.NewDiagnostics()
+	d.Add("warning", "type Y has no annotation")
+	out := d.Format()
+	if !strings.Contains(out, "type Y has no annotation") {
+		t.Errorf("Diagnostics.Format() = %q; warning message must appear in formatted output", out)
+	}
+}
+
+func TestDiagnosticsWarningsCountedSeparatelyFromErrors(t *testing.T) {
+	t.Parallel()
+	d := codegen.NewDiagnostics()
+	d.Add("warning", "w1")
+	d.Add("warning", "w2")
+	if errs := d.Errors(); len(errs) != 0 {
+		t.Errorf("Diagnostics.Errors() = %v after adding only warnings; want empty", errs)
+	}
+	out := d.Format()
+	if !strings.Contains(out, "w1") || !strings.Contains(out, "w2") {
+		t.Errorf("Diagnostics.Format() = %q; both warning messages must appear", out)
+	}
+}
+
+func TestDiagnosticsErrorsPreservesInsertionOrder(t *testing.T) {
+	t.Parallel()
+	d := codegen.NewDiagnostics()
+	d.Add("error", "first-error")
+	d.Add("warning", "w1")
+	d.Add("error", "second-error")
+	errs := d.Errors()
+	if len(errs) != 2 {
+		t.Fatalf("Diagnostics.Errors() len = %d, want 2", len(errs))
+	}
+	if !strings.Contains(errs[0].Message, "first-error") {
+		t.Errorf("errs[0].Message = %q, want to contain %q", errs[0].Message, "first-error")
+	}
+	if !strings.Contains(errs[1].Message, "second-error") {
+		t.Errorf("errs[1].Message = %q, want to contain %q", errs[1].Message, "second-error")
+	}
+}
+
+func TestDiagnosticsFormatCleanIsEmpty(t *testing.T) {
+	t.Parallel()
+	// Format() on a fresh, clean Diagnostics must return "".
+	d := codegen.NewDiagnostics()
+	out := d.Format()
+	if out != "" {
+		t.Errorf("Diagnostics.Format() on clean instance = %q, want %q", out, "")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ImportTracker — adversary gap tests (finding 9)
+// ---------------------------------------------------------------------------
+
+func TestImportTrackerExternalOnlyNoBlankLine(t *testing.T) {
+	t.Parallel()
+	// A single group (external only) must not produce a blank-line group separator.
+	tr := codegen.NewImportTracker()
+	tr.Add("github.com/iansmith/webidl/typemap")
+	tr.Add("github.com/iansmith/webidl/webidl")
+	got := tr.Render()
+	if !strings.Contains(got, `"github.com/iansmith/webidl/typemap"`) {
+		t.Errorf("ImportTracker.Render() missing external import: %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
+		t.Errorf("ImportTracker.Render() with external-only imports = %q; must not contain blank-line group separator", got)
+	}
+}
+
+func TestImportTrackerStdlibOnlyNoBlankLine(t *testing.T) {
+	t.Parallel()
+	// A single group (stdlib only) must not produce a blank-line group separator.
+	tr := codegen.NewImportTracker()
+	tr.Add("fmt")
+	tr.Add("strings")
+	got := tr.Render()
+	if strings.Contains(got, "\n\n") {
+		t.Errorf("ImportTracker.Render() with stdlib-only imports = %q; must not contain blank-line group separator", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// File — adversary gap tests (findings 12, 13)
+// ---------------------------------------------------------------------------
+
+func TestFileSetImportsTwiceLastWins(t *testing.T) {
+	t.Parallel()
+	// The second SetImports call must replace the first, not accumulate.
+	first := codegen.NewImportTracker()
+	first.Add("fmt")
+
+	second := codegen.NewImportTracker()
+	second.Add("strings")
+
+	f := codegen.NewFile("gen")
+	f.SetImports(first)
+	f.SetImports(second)
+
+	out, err := f.Render()
+	if err != nil {
+		t.Fatalf("File.Render() error: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, `"fmt"`) {
+		t.Errorf("File.Render() after two SetImports calls still contains first tracker's import; second call must replace the first")
+	}
+	if !strings.Contains(s, `"strings"`) {
+		t.Errorf("File.Render() after two SetImports calls missing second tracker's import %q", `"strings"`)
+	}
+}
+
+func TestFileRenderIsGofmtIdempotent(t *testing.T) {
+	t.Parallel()
+	// Render output must be byte-for-byte identical after a second gofmt pass.
+	tr := codegen.NewImportTracker()
+	tr.Add("fmt")
+	tr.Add("strings")
+	f := codegen.NewFile("gen")
+	f.SetImports(tr)
+
+	out, err := f.Render()
+	if err != nil {
+		t.Fatalf("File.Render() error: %v", err)
+	}
+	formatted, err := format.Source(out)
+	if err != nil {
+		t.Fatalf("go/format.Source on Render() output failed: %v\noutput:\n%s", err, out)
+	}
+	if !bytes.Equal(out, formatted) {
+		t.Errorf("File.Render() output is not gofmt-canonical:\ngot:\n%s\nwant:\n%s", out, formatted)
 	}
 }
