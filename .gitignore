@@ -13,3 +13,6 @@
 # Editor / OS noise
 .DS_Store
 *.swp
+
+# Claude Code agent worktrees (created by parallel agent isolation)
+.claude/
