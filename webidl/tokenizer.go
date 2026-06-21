@@ -31,6 +31,14 @@ var TypeNameKeywords = []string{
 // StringTypes are the three built-in IDL string types.
 var StringTypes = []string{"ByteString", "DOMString", "USVString"}
 
+// Type-modifier extended attribute names. These attributes appear on IDLType
+// nodes and affect codegen semantics without changing the Go type name.
+const (
+	ExtAttrClamp        = "Clamp"
+	ExtAttrEnforceRange = "EnforceRange"
+	ExtAttrAllowShared  = "AllowShared"
+)
+
 // ArgumentNameKeywords may appear as argument names despite being keywords.
 var ArgumentNameKeywords = []string{
 	"async",

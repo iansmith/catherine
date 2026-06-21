@@ -15,8 +15,8 @@ import (
 // indicates the type should be written as *Name in generated source.
 //
 // Unresolved is true when the mapper could not find an explicit Go type for
-// the IDL base — either a not-yet-implemented stub (union, generic) or an
-// unrecognised interface name. Codegen layers should check Unresolved before
+// the IDL base — either an unimplemented generic or an unrecognised interface
+// name. Codegen layers should check Unresolved before
 // emitting output to avoid silently producing any for unmapped interface names.
 // Intentional mappings (scalars, string types, IDL any/object/undefined/void)
 // always have Unresolved=false.
@@ -64,13 +64,14 @@ type Mapper struct{}
 // MapType maps a single IDLType to a GoType. Returns an error if t is nil,
 // if t has both Union and Generic set (malformed node), or if t carries no
 // recognisable type information (Union=false, Generic="", Base=""). Union types
-// remain as unresolved stubs; all generic families are handled (sequences,
-// record, Promise).
+// map to intentional any (Unresolved:false); all generic families are handled
+// (sequences, record, Promise).
 //
-// Note: a nil error does not guarantee a fully-resolved type. Stubs and
-// unrecognised base types return GoType{Name:"any", Unresolved:true} with no
-// error. Intentional mappings return Unresolved:false. Check GoType.Unresolved
-// before emitting code to avoid silently producing any for unmapped names.
+// Note: a nil error does not guarantee a fully-resolved type. Unrecognised base
+// types and unimplemented generics return GoType{Name:"any", Unresolved:true}
+// with no error. Intentional mappings (including union→any) return
+// Unresolved:false. Check GoType.Unresolved before emitting code to avoid
+// silently producing any for unmapped names.
 func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	if t == nil {
 		return GoType{}, fmt.Errorf("MapType: nil IDLType")
@@ -192,7 +193,7 @@ func isRecordKeyType(base string) bool {
 func extAttrAnnotation(attrs []*webidl.ExtAttr) string {
 	for _, a := range attrs {
 		switch a.Name {
-		case "Clamp", "EnforceRange", "AllowShared":
+		case webidl.ExtAttrClamp, webidl.ExtAttrEnforceRange, webidl.ExtAttrAllowShared:
 			return a.Name
 		}
 	}
