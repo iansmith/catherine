@@ -122,7 +122,7 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		}
 		elem, err := m.MapType(t.Subtypes[0])
 		if err != nil {
-			return GoType{}, fmt.Errorf("MapType: %s element: %w", t.Generic, err)
+			return GoType{}, fmt.Errorf("%s element: %w", t.Generic, err)
 		}
 		return GoType{Name: "[]" + elem.String(), Unresolved: elem.Unresolved}, nil
 	case "async_sequence":
