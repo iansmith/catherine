@@ -12,10 +12,18 @@ import (
 // PkgPath is the import path of the package that declares the type ("" for
 // predeclared / built-in types). Name is the unqualified type name. Pointer
 // indicates the type should be written as *Name in generated source.
+//
+// Unresolved is true when the mapper could not find an explicit Go type for
+// the IDL base — either a not-yet-implemented stub (union, generic) or an
+// unrecognised interface name. Codegen layers should check Unresolved before
+// emitting output to avoid silently producing any for unmapped interface names.
+// Intentional mappings (scalars, string types, IDL any/object/undefined/void)
+// always have Unresolved=false.
 type GoType struct {
-	PkgPath string
-	Name    string
-	Pointer bool
+	PkgPath    string
+	Name       string
+	Pointer    bool
+	Unresolved bool
 }
 
 // String returns the Go source representation of the type — the form that
@@ -54,9 +62,10 @@ type Mapper struct{}
 // union and generic type families will be replaced in follow-on tickets
 // (CATH-45 through CATH-48).
 //
-// Note: a nil error does not guarantee a fully-resolved type. Base types not
-// yet handled by this mapper (string types, interface names, etc.) return
-// GoType{Name:"any"} with no error until their respective tickets land.
+// Note: a nil error does not guarantee a fully-resolved type. Stubs and
+// unrecognised base types return GoType{Name:"any", Unresolved:true} with no
+// error. Intentional mappings return Unresolved:false. Check GoType.Unresolved
+// before emitting code to avoid silently producing any for unmapped names.
 func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	if t == nil {
 		return GoType{}, fmt.Errorf("MapType: nil IDLType")
@@ -78,7 +87,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 
 	// Nullable post-processing: T? → *T for value types. Reference types are
 	// already nil-able, so they are left unchanged.
-	if t.Nullable && isValueType(got) {
+	if t.Nullable && !got.Unresolved && isValueType(got) {
 		got.Pointer = true
 	}
 
@@ -86,11 +95,11 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Stubs — replaced by real implementations in CATH-45 through CATH-48
+// Stubs — replaced by real implementations in CATH-46 through CATH-48
 // ---------------------------------------------------------------------------
 
-func stubUnion(_ *webidl.IDLType) GoType   { return GoType{Name: "any"} }
-func stubGeneric(_ *webidl.IDLType) GoType { return GoType{Name: "any"} }
+func stubUnion(_ *webidl.IDLType) GoType   { return GoType{Name: "any", Unresolved: true} }
+func stubGeneric(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared
 // type names. "octet" is the WebIDL unsigned-byte primitive (the IDL keyword;
@@ -111,15 +120,42 @@ var scalarGoTypes = map[string]string{
 	"unrestricted double": "float64",
 }
 
+// nonScalarGoTypes maps WebIDL string and special/sentinel type bases to Go
+// predeclared type names.
+//
+// String types all collapse to bare string; semantic distinctions (UTF-16 vs.
+// UTF-8, byte-range validity) are caller responsibility. ByteString maps to
+// string rather than []byte — the IDL model treats it as a string, and
+// callers who need byte access convert with []byte(s).
+//
+// undefined and void ("no value") map to any because the mapper cannot know
+// return vs. argument position. The codegen layer (CATH-46+) decides whether
+// to emit a return type.
+var nonScalarGoTypes = map[string]string{
+	// string types
+	"ByteString":  "string",
+	"CSSOMString": "string", // CSS Object Model string; recognized by webidl/validate.go
+	"DOMString":   "string",
+	"USVString":   "string",
+	// special / sentinel types
+	"any":       "any",
+	"object":    "any",
+	"undefined": "any",
+	"void":      "any",
+}
+
 // mapBase resolves an IDLType with a non-empty Base field to a GoType. Scalar
-// primitive types are mapped via scalarGoTypes; all other base types (string
-// types, interface names, etc.) fall back to GoType{Name: "any"} until
-// CATH-45 implements them.
+// primitive types are mapped via scalarGoTypes; string and special/sentinel
+// types via nonScalarGoTypes. All other base types (interface names, etc.)
+// fall back to GoType{Name: "any", Unresolved: true}.
 func mapBase(t *webidl.IDLType) GoType {
 	if name, ok := scalarGoTypes[t.Base]; ok {
 		return GoType{Name: name}
 	}
-	return GoType{Name: "any"}
+	if name, ok := nonScalarGoTypes[t.Base]; ok {
+		return GoType{Name: name}
+	}
+	return GoType{Name: "any", Unresolved: true}
 }
 
 // valueTypeNames lists the predeclared Go types that are value types: a

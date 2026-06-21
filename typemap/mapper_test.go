@@ -110,6 +110,9 @@ func TestMapTypeUnionNoError(t *testing.T) {
 	if got.Name == "" {
 		t.Error("MapType(union) returned GoType with empty Name")
 	}
+	if !got.Unresolved {
+		t.Error("MapType(union stub).Unresolved = false; stub must be marked Unresolved")
+	}
 }
 
 func TestMapTypeGenericSequenceNoError(t *testing.T) {
@@ -125,6 +128,9 @@ func TestMapTypeGenericSequenceNoError(t *testing.T) {
 	}
 	if got.Name == "" {
 		t.Error("MapType(sequence<long>) returned GoType with empty Name")
+	}
+	if !got.Unresolved {
+		t.Error("MapType(sequence<long> stub).Unresolved = false; stub must be marked Unresolved")
 	}
 }
 
@@ -142,6 +148,9 @@ func TestMapTypeGenericRecordNoError(t *testing.T) {
 	if got.Name == "" {
 		t.Error("MapType(record<DOMString,long>) returned GoType with empty Name")
 	}
+	if !got.Unresolved {
+		t.Error("MapType(record<DOMString,long> stub).Unresolved = false; stub must be marked Unresolved")
+	}
 }
 
 func TestMapTypeGenericPromiseNoError(t *testing.T) {
@@ -157,6 +166,9 @@ func TestMapTypeGenericPromiseNoError(t *testing.T) {
 	}
 	if got.Name == "" {
 		t.Error("MapType(Promise<long>) returned GoType with empty Name")
+	}
+	if !got.Unresolved {
+		t.Error("MapType(Promise<long> stub).Unresolved = false; stub must be marked Unresolved")
 	}
 }
 
@@ -467,3 +479,194 @@ func TestMapTypeScalarNullableBecomesPointer(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CATH-45: String and special/sentinel type mappings
+// ---------------------------------------------------------------------------
+
+// --- Edge / boundary ---
+
+// TestMapTypeNonScalarBaseNullablePromotion verifies nullable promotion for all
+// string and special/sentinel type bases. string is a value type so T? → *T;
+// any is a reference type so T? → T (no extra pointer). Expected pointer is
+// derived from valueTypeNames, keeping the test in sync with the promotion logic.
+func TestMapTypeNonScalarBaseNullablePromotion(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, goName := range nonScalarGoTypes {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base, Nullable: true})
+			if err != nil {
+				t.Fatalf("MapType(%q?) returned error: %v", base, err)
+			}
+			if got.Name != goName {
+				t.Errorf("MapType(%q?).Name = %q, want %q", base, got.Name, goName)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q?).PkgPath = %q, want \"\"", base, got.PkgPath)
+			}
+			wantPointer := valueTypeNames[goName]
+			if got.Pointer != wantPointer {
+				t.Errorf("MapType(%q?).Pointer = %v, want %v", base, got.Pointer, wantPointer)
+			}
+		})
+	}
+}
+
+// --- Error / rejection ---
+
+// TestMapTypeUnknownBaseStillFallsThrough ensures that adding explicit string/special
+// maps does not break the existing fallback for unrecognised bases (interface names, etc.).
+func TestMapTypeUnknownBaseStillFallsThrough(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	// "EventTarget" is a WebIDL interface name — not a scalar, string, or special type.
+	got, err := m.MapType(&webidl.IDLType{Base: "EventTarget"})
+	if err != nil {
+		t.Fatalf("MapType(EventTarget) returned error: %v", err)
+	}
+	if got.Name == "" {
+		t.Error("MapType(EventTarget) returned GoType with empty Name; fallback expected")
+	}
+	if !got.Unresolved {
+		t.Error("MapType(EventTarget).Unresolved = false; unrecognised bases must be marked Unresolved so codegen can distinguish them from intentional any mappings")
+	}
+}
+
+// --- Happy path ---
+
+// TestMapTypeNonScalarBasesExact verifies every IDL string and special/sentinel type
+// base maps to the correct predeclared Go type with no package path and no pointer.
+func TestMapTypeNonScalarBasesExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	for base, want := range nonScalarGoTypes {
+		t.Run(base, func(t *testing.T) {
+			t.Parallel()
+			got, err := m.MapType(&webidl.IDLType{Base: base})
+			if err != nil {
+				t.Fatalf("MapType(%q) returned error: %v", base, err)
+			}
+			if got.Name != want {
+				t.Errorf("MapType(%q).Name = %q, want %q", base, got.Name, want)
+			}
+			if got.PkgPath != "" {
+				t.Errorf("MapType(%q).PkgPath = %q, want \"\"", base, got.PkgPath)
+			}
+			if got.Pointer {
+				t.Errorf("MapType(%q).Pointer = true, want false for non-nullable", base)
+			}
+			if got.Unresolved {
+				t.Errorf("MapType(%q).Unresolved = true; explicitly mapped types must not be marked unresolved", base)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CATH-45: Adversary gap tests
+// ---------------------------------------------------------------------------
+
+// TestNonScalarGoTypesValueNameInvariant enforces that valueTypeNames is consistent
+// with nonScalarGoTypes: string entries must be value types (nullable → *T); any
+// entries must not be (any is already nil-able). A future edit adding a new Go type
+// name to nonScalarGoTypes without classifying it here will fail the default case.
+func TestNonScalarGoTypesValueNameInvariant(t *testing.T) {
+	t.Parallel()
+	for base, goName := range nonScalarGoTypes {
+		switch goName {
+		case "string":
+			if !valueTypeNames[goName] {
+				t.Errorf("nonScalarGoTypes[%q]=%q not in valueTypeNames; nullable would skip pointer promotion", base, goName)
+			}
+		case "any":
+			if valueTypeNames[goName] {
+				t.Errorf("nonScalarGoTypes[%q]=%q is in valueTypeNames; nullable any would incorrectly gain a pointer", base, goName)
+			}
+		default:
+			t.Errorf("nonScalarGoTypes[%q]=%q is an unclassified Go type; update this test to specify whether it is a value type", base, goName)
+		}
+	}
+}
+
+// TestNonScalarBasesAbsentFromScalarGoTypes guards against accidentally adding string
+// or special type bases to scalarGoTypes, which would route them through the wrong
+// dispatch branch while tests still passed.
+func TestNonScalarBasesAbsentFromScalarGoTypes(t *testing.T) {
+	t.Parallel()
+	for base := range nonScalarGoTypes {
+		if _, ok := scalarGoTypes[base]; ok {
+			t.Errorf("scalarGoTypes contains %q; non-scalar bases must not be in the scalar map (wrong dispatch path)", base)
+		}
+	}
+}
+
+// TestMapTypeByteStringMapsToStringNotBytes is a standalone contract test for the
+// ByteString design decision: ByteString → string (not []byte). See CATH-45.
+func TestMapTypeByteStringMapsToStringNotBytes(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	want := GoType{Name: "string"}
+	got, err := m.MapType(&webidl.IDLType{Base: "ByteString"})
+	if err != nil {
+		t.Fatalf("MapType(ByteString) returned error: %v", err)
+	}
+	if got != want {
+		t.Errorf("MapType(ByteString) = %+v, want %+v (must be string, not []byte)", got, want)
+	}
+	wantNullable := GoType{Name: "string", Pointer: true}
+	gotNullable, err := m.MapType(&webidl.IDLType{Base: "ByteString", Nullable: true})
+	if err != nil {
+		t.Fatalf("MapType(ByteString?) returned error: %v", err)
+	}
+	if gotNullable != wantNullable {
+		t.Errorf("MapType(ByteString?) = %+v, want %+v", gotNullable, wantNullable)
+	}
+}
+
+// TestMapTypeDOMStringMapsToString is a hardcoded oracle for DOMString — the most
+// common IDL string type. Unlike the table-driven test, this catches wrong values
+// in nonScalarGoTypes itself (e.g. DOMString remapped to "[]byte").
+func TestMapTypeDOMStringMapsToString(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	want := GoType{Name: "string"}
+	got, err := m.MapType(&webidl.IDLType{Base: "DOMString"})
+	if err != nil {
+		t.Fatalf("MapType(DOMString) returned error: %v", err)
+	}
+	if got != want {
+		t.Errorf("MapType(DOMString) = %+v, want %+v", got, want)
+	}
+}
+
+// TestMapTypeVoidMapsToAny documents that void → GoType{Name:"any", Unresolved:false}:
+// an intentional mapping, not a fallback. Unresolved=false distinguishes it from
+// unrecognised interface names, which the codegen layer (CATH-46+) must treat differently.
+func TestMapTypeVoidMapsToAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	want := GoType{Name: "any"}
+	got, err := m.MapType(&webidl.IDLType{Base: "void"})
+	if err != nil {
+		t.Fatalf("MapType(void) returned error: %v", err)
+	}
+	if got != want {
+		t.Errorf("MapType(void) = %+v, want %+v", got, want)
+	}
+}
+
+// TestWebIDLStringTypesCoveredByNonScalarGoTypes ensures that every IDL string type
+// recognized by the webidl package (webidl.StringTypes) is explicitly mapped to
+// "string" in nonScalarGoTypes. A new entry in webidl.StringTypes that is missing
+// here would silently map to GoType{Name:"any", Unresolved:true} instead of "string".
+func TestWebIDLStringTypesCoveredByNonScalarGoTypes(t *testing.T) {
+	t.Parallel()
+	for _, base := range webidl.StringTypes {
+		if nonScalarGoTypes[base] != "string" {
+			t.Errorf("nonScalarGoTypes[%q] = %q, want \"string\"; add it when webidl.StringTypes gains a new entry", base, nonScalarGoTypes[base])
+		}
+	}
+}
+
