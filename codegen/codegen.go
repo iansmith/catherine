@@ -103,8 +103,8 @@ type File struct {
 	decls   []Decl
 }
 
-// NewFile returns a File for the given package name. pkgName may be empty, but
-// Render will return an error in that case.
+// NewFile returns a File for the given package name. pkgName must be a valid
+// Go identifier; Render returns an error if it is empty.
 func NewFile(pkgName string) *File {
 	return &File{pkgName: pkgName}
 }
