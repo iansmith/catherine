@@ -723,3 +723,318 @@ func TestMapTypeAsyncSequenceReturnsError(t *testing.T) {
 		t.Error("MapType(async_sequence<long>) expected error (IDL-to-JS only), got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CATH-47: record<K,V> → map[string]V
+// ---------------------------------------------------------------------------
+
+// --- Edge / boundary ---
+
+// TestMapTypeRecordNonStringKeyReturnsError verifies that a record with a non-string
+// key type returns an error. WebIDL allows only DOMString, USVString, or ByteString
+// as key types; any other base must be rejected.
+func TestMapTypeRecordNonStringKeyReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "long"}, {Base: "boolean"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(record<long,boolean>) expected error (non-string key type), got nil")
+	}
+}
+
+// TestMapTypeRecordNullableNoPointer verifies that a nullable record does NOT gain an
+// extra pointer. map[K]V is already a reference type and is nil-able without wrapping.
+func TestMapTypeRecordNullableNoPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Nullable: true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,long>?) returned error: %v", err)
+	}
+	if got.Name != "map[string]int32" {
+		t.Errorf("MapType(record<DOMString,long>?).Name = %q, want \"map[string]int32\"", got.Name)
+	}
+	if got.Pointer {
+		t.Error("MapType(record<DOMString,long>?).Pointer = true; maps are reference types and must not gain an extra pointer")
+	}
+}
+
+// TestMapTypeRecordNullableValueElement verifies that a nullable element type inside
+// a record is promoted to a pointer: record<DOMString, boolean?> → map[string]*bool.
+func TestMapTypeRecordNullableValueElement(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "boolean", Nullable: true}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,boolean?>) returned error: %v", err)
+	}
+	if got.Name != "map[string]*bool" {
+		t.Errorf("MapType(record<DOMString,boolean?>).Name = %q, want \"map[string]*bool\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(record<DOMString,boolean?>).Unresolved = true; resolved record must not be marked Unresolved")
+	}
+}
+
+// --- Error / rejection ---
+
+// TestMapTypeRecordNoSubtypesReturnsError verifies that a record with nil Subtypes
+// returns an error (malformed node: no type parameters).
+func TestMapTypeRecordNoSubtypesReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: nil,
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(record with nil Subtypes) expected error for malformed node, got nil")
+	}
+}
+
+// TestMapTypeRecordOneSubtypeReturnsError verifies that a record with only one subtype
+// (missing the value type) returns an error.
+func TestMapTypeRecordOneSubtypeReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}},
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(record with one Subtype) expected error for malformed node (missing value type), got nil")
+	}
+}
+
+// --- Cross-feature ---
+
+// TestMapTypeRecordNestedValue verifies recursive value type resolution:
+// record<DOMString, sequence<long>> → map[string][]int32.
+func TestMapTypeRecordNestedValue(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	seqLong := &webidl.IDLType{Generic: "sequence", Subtypes: []*webidl.IDLType{{Base: "long"}}}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, seqLong},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,sequence<long>>) returned error: %v", err)
+	}
+	if got.Name != "map[string][]int32" {
+		t.Errorf("MapType(record<DOMString,sequence<long>>).Name = %q, want \"map[string][]int32\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(record<DOMString,sequence<long>>).Unresolved = true; resolved record must not be marked Unresolved")
+	}
+}
+
+// TestMapTypeRecordNestedRecord verifies doubly-nested record resolution:
+// record<DOMString, record<USVString, long>> → map[string]map[string]int32.
+func TestMapTypeRecordNestedRecord(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	inner := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "USVString"}, {Base: "long"}},
+	}
+	outer := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, inner},
+	}
+	got, err := m.MapType(outer)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,record<USVString,long>>) returned error: %v", err)
+	}
+	if got.Name != "map[string]map[string]int32" {
+		t.Errorf("MapType(record<DOMString,record<USVString,long>>).Name = %q, want \"map[string]map[string]int32\"", got.Name)
+	}
+}
+
+// TestMapTypeRecordUnresolvedValue verifies that an unresolved value type propagates
+// Unresolved=true to the record: record<DOMString, EventTarget> → map[string]any, Unresolved=true.
+func TestMapTypeRecordUnresolvedValue(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "EventTarget"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,EventTarget>) returned error: %v", err)
+	}
+	if got.Name != "map[string]any" {
+		t.Errorf("MapType(record<DOMString,EventTarget>).Name = %q, want \"map[string]any\"", got.Name)
+	}
+	if !got.Unresolved {
+		t.Error("MapType(record<DOMString,EventTarget>).Unresolved = false; unresolved value type must propagate Unresolved to the record")
+	}
+}
+
+// --- Happy path ---
+
+// TestMapTypeRecordExact verifies the spec example: record<DOMString, long> → map[string]int32.
+func TestMapTypeRecordExact(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<DOMString,long>) returned error: %v", err)
+	}
+	if got.Name != "map[string]int32" {
+		t.Errorf("MapType(record<DOMString,long>).Name = %q, want \"map[string]int32\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(record<DOMString,long>).Unresolved = true; fully resolved record must not be marked Unresolved")
+	}
+}
+
+// TestMapTypeRecordUSVStringKey verifies that USVString is a valid record key.
+func TestMapTypeRecordUSVStringKey(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "USVString"}, {Base: "boolean"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<USVString,boolean>) returned error: %v", err)
+	}
+	if got.Name != "map[string]bool" {
+		t.Errorf("MapType(record<USVString,boolean>).Name = %q, want \"map[string]bool\"", got.Name)
+	}
+}
+
+// TestMapTypeRecordByteStringKey verifies that ByteString is a valid record key.
+func TestMapTypeRecordByteStringKey(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "record",
+		Subtypes: []*webidl.IDLType{{Base: "ByteString"}, {Base: "DOMString"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(record<ByteString,DOMString>) returned error: %v", err)
+	}
+	if got.Name != "map[string]string" {
+		t.Errorf("MapType(record<ByteString,DOMString>).Name = %q, want \"map[string]string\"", got.Name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CATH-47: Promise<T> → any (design decision: punt, unblock codegen)
+//
+// Promise<T> maps to GoType{Name:"any", Unresolved:false}. This is an intentional
+// mapping analogous to void/undefined → any. Promise semantics cannot be faithfully
+// represented at the Go type level without a runtime package; callers that need
+// typed resolution narrow with type assertions. This decision is revisable in a
+// future ticket once the codegen layer has a clearer picture of Promise call sites.
+// ---------------------------------------------------------------------------
+
+// --- Edge / boundary ---
+
+// TestMapTypePromiseNullableNoPointer verifies that Promise<T>? does NOT gain a pointer.
+// The resolved type is any, which is already a reference type and nil-able.
+func TestMapTypePromiseNullableNoPointer(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "Promise",
+		Nullable: true,
+		Subtypes: []*webidl.IDLType{{Base: "long"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(Promise<long>?) returned error: %v", err)
+	}
+	if got.Name != "any" {
+		t.Errorf("MapType(Promise<long>?).Name = %q, want \"any\"", got.Name)
+	}
+	if got.Pointer {
+		t.Error("MapType(Promise<long>?).Pointer = true; any is already reference-typed, must not gain extra pointer")
+	}
+}
+
+// --- Error / rejection ---
+
+// TestMapTypePromiseNoSubtypesReturnsError verifies that a malformed Promise with no
+// type parameter returns an error (no valid WebIDL Promise exists without one).
+func TestMapTypePromiseNoSubtypesReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "Promise",
+		Subtypes: nil,
+	}
+	_, err := m.MapType(idlType)
+	if err == nil {
+		t.Error("MapType(Promise with nil Subtypes) expected error for malformed node, got nil")
+	}
+}
+
+// --- Happy path ---
+
+// TestMapTypePromisePuntsToAny verifies the design decision: Promise<T> maps to
+// GoType{Name:"any", Unresolved:false}. Unresolved=false distinguishes this
+// intentional mapping from interface-name fallbacks that codegen must flag.
+func TestMapTypePromisePuntsToAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "Promise",
+		Subtypes: []*webidl.IDLType{{Base: "long"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(Promise<long>) returned error: %v", err)
+	}
+	if got.Name != "any" {
+		t.Errorf("MapType(Promise<long>).Name = %q, want \"any\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(Promise<long>).Unresolved = true; Promise→any is an intentional mapping, not an unresolved stub")
+	}
+}
+
+// TestMapTypePromiseVoidSubtype verifies that Promise<void> also maps to any, not any?.
+func TestMapTypePromiseVoidSubtype(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Generic:  "Promise",
+		Subtypes: []*webidl.IDLType{{Base: "void"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(Promise<void>) returned error: %v", err)
+	}
+	if got.Name != "any" {
+		t.Errorf("MapType(Promise<void>).Name = %q, want \"any\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(Promise<void>).Unresolved = true; Promise<void>→any must be intentional (Unresolved=false)")
+	}
+}
