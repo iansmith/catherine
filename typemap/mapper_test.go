@@ -115,7 +115,7 @@ func TestMapTypeUnionNoError(t *testing.T) {
 	}
 }
 
-func TestMapTypeGenericRecordNoError(t *testing.T) {
+func TestMapTypeGenericRecordResolved(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
 	idlType := &webidl.IDLType{
@@ -126,15 +126,15 @@ func TestMapTypeGenericRecordNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapType(record<DOMString,long>) returned error: %v", err)
 	}
-	if got.Name == "" {
-		t.Error("MapType(record<DOMString,long>) returned GoType with empty Name")
+	if got.Name != "map[string]int32" {
+		t.Errorf("MapType(record<DOMString,long>).Name = %q, want \"map[string]int32\"", got.Name)
 	}
-	if !got.Unresolved {
-		t.Error("MapType(record<DOMString,long> stub).Unresolved = false; stub must be marked Unresolved")
+	if got.Unresolved {
+		t.Error("MapType(record<DOMString,long>).Unresolved = true; fully resolved record must not be marked Unresolved")
 	}
 }
 
-func TestMapTypeGenericPromiseNoError(t *testing.T) {
+func TestMapTypeGenericPromiseResolved(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
 	idlType := &webidl.IDLType{
@@ -145,11 +145,11 @@ func TestMapTypeGenericPromiseNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapType(Promise<long>) returned error: %v", err)
 	}
-	if got.Name == "" {
-		t.Error("MapType(Promise<long>) returned GoType with empty Name")
+	if got.Name != "any" {
+		t.Errorf("MapType(Promise<long>).Name = %q, want \"any\"", got.Name)
 	}
-	if !got.Unresolved {
-		t.Error("MapType(Promise<long> stub).Unresolved = false; stub must be marked Unresolved")
+	if got.Unresolved {
+		t.Error("MapType(Promise<long>).Unresolved = true; Promise→any is intentional (not a stub)")
 	}
 }
 

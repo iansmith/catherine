@@ -127,8 +127,33 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		return GoType{Name: "[]" + elem.String(), Unresolved: elem.Unresolved}, nil
 	case "async_sequence":
 		return GoType{}, fmt.Errorf("MapType: async_sequence is IDL-to-JS only and should have been rejected by validate.go")
+	case "record":
+		if len(t.Subtypes) < 2 {
+			return GoType{}, fmt.Errorf("MapType: record requires exactly 2 type parameters, got %d", len(t.Subtypes))
+		}
+		// WebIDL restricts record key types to DOMString, USVString, or ByteString —
+		// all of which map to Go string. Reject any other base so callers get an
+		// explicit error instead of a silently wrong map key type.
+		if nonScalarGoTypes[t.Subtypes[0].Base] != "string" {
+			return GoType{}, fmt.Errorf("MapType: record key type must be DOMString, USVString, or ByteString, got %q", t.Subtypes[0].Base)
+		}
+		val, err := m.MapType(t.Subtypes[1])
+		if err != nil {
+			return GoType{}, fmt.Errorf("record value: %w", err)
+		}
+		return GoType{Name: "map[string]" + val.String(), Unresolved: val.Unresolved}, nil
+	case "Promise":
+		// Promise<T> is mapped to any (intentional punt, not an unresolved stub).
+		// Go cannot faithfully represent single-resolution Promise semantics at the
+		// type level without a dedicated runtime type. Mapping to any unblocks codegen;
+		// callers that need typed resolution narrow with type assertions. This is
+		// revisable once the codegen layer has a clearer picture of Promise call sites.
+		if len(t.Subtypes) == 0 {
+			return GoType{}, fmt.Errorf("MapType: Promise requires a type parameter")
+		}
+		return GoType{Name: "any"}, nil
 	default:
-		// Promise, record, and future generics remain as stubs (CATH-48+).
+		// Future generics remain as stubs until a follow-on ticket implements them.
 		return GoType{Name: "any", Unresolved: true}, nil
 	}
 }
