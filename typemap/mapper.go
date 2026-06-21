@@ -15,8 +15,8 @@ import (
 // indicates the type should be written as *Name in generated source.
 //
 // Unresolved is true when the mapper could not find an explicit Go type for
-// the IDL base — either a not-yet-implemented stub (union, generic) or an
-// unrecognised interface name. Codegen layers should check Unresolved before
+// the IDL base — either an unimplemented generic or an unrecognised interface
+// name. Codegen layers should check Unresolved before
 // emitting output to avoid silently producing any for unmapped interface names.
 // Intentional mappings (scalars, string types, IDL any/object/undefined/void)
 // always have Unresolved=false.
@@ -25,6 +25,10 @@ type GoType struct {
 	Name       string
 	Pointer    bool
 	Unresolved bool
+	// Annotation carries IDL extended-attribute modifiers that affect codegen
+	// semantics but not the Go type name (e.g. "Clamp", "EnforceRange",
+	// "AllowShared"). Empty when no modifier applies.
+	Annotation string
 }
 
 // String returns the Go source representation of the type — the form that
@@ -60,13 +64,14 @@ type Mapper struct{}
 // MapType maps a single IDLType to a GoType. Returns an error if t is nil,
 // if t has both Union and Generic set (malformed node), or if t carries no
 // recognisable type information (Union=false, Generic="", Base=""). Union types
-// remain as unresolved stubs; all generic families are handled (sequences,
-// record, Promise).
+// map to intentional any (Unresolved:false); all generic families are handled
+// (sequences, record, Promise).
 //
-// Note: a nil error does not guarantee a fully-resolved type. Stubs and
-// unrecognised base types return GoType{Name:"any", Unresolved:true} with no
-// error. Intentional mappings return Unresolved:false. Check GoType.Unresolved
-// before emitting code to avoid silently producing any for unmapped names.
+// Note: a nil error does not guarantee a fully-resolved type. Unrecognised base
+// types and unrecognised generics return GoType{Name:"any", Unresolved:true}
+// with no error. Intentional mappings (including union→any) return
+// Unresolved:false. Check GoType.Unresolved before emitting code to avoid
+// silently producing any for unmapped names.
 func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	if t == nil {
 		return GoType{}, fmt.Errorf("MapType: nil IDLType")
@@ -77,7 +82,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	case t.Union && t.Generic != "":
 		return GoType{}, fmt.Errorf("MapType: IDLType has both Union and Generic set (malformed node)")
 	case t.Union:
-		got = stubUnion(t)
+		got = unionToAny(t)
 	case t.Generic != "":
 		var genErr error
 		got, genErr = m.mapGeneric(t)
@@ -86,6 +91,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 		}
 	case t.Base != "":
 		got = mapBase(t)
+		got.Annotation = extAttrAnnotation(t.ExtAttrs)
 	default:
 		return GoType{}, fmt.Errorf("MapType: IDLType has neither Union, Generic, nor Base set")
 	}
@@ -103,8 +109,12 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 // Generic and union resolution
 // ---------------------------------------------------------------------------
 
-// stubUnion is a placeholder for union resolution; union mapping is not yet implemented.
-func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
+// unionToAny maps all IDL union types to Go's any. This is an intentional
+// design decision: union→any loses static type information but is the
+// simplest mapping that unblocks codegen. Callers that need per-member
+// typing narrow with type assertions. Unresolved is false because this is
+// a deliberate choice, not an unimplemented stub.
+func unionToAny(_ *webidl.IDLType) GoType { return GoType{Name: "any"} }
 
 // mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
 // IDL sequence-like generics (sequence, FrozenArray, ObservableArray) map to Go
@@ -174,6 +184,20 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 // Uses webidl.StringTypes as the single source of truth, matching the parser.
 func isRecordKeyType(base string) bool {
 	return slices.Contains(webidl.StringTypes, base)
+}
+
+// extAttrAnnotation scans a list of IDL extended attributes and returns the
+// name of the first recognised type-modifier attribute ("Clamp",
+// "EnforceRange", "AllowShared"). Returns "" when none is present or when
+// all attributes are unrecognised — unknown attributes are silently ignored.
+func extAttrAnnotation(attrs []*webidl.ExtAttr) string {
+	for _, a := range attrs {
+		switch a.Name {
+		case webidl.ExtAttrClamp, webidl.ExtAttrEnforceRange, webidl.ExtAttrAllowShared:
+			return a.Name
+		}
+	}
+	return ""
 }
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared

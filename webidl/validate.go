@@ -85,7 +85,7 @@ func (op *Operation) validateMember(defs *Definitions) []error {
 		errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
 		// migrate-allowshared: [AllowShared] is placed on the *argument* (not the
 		// IDLType) when the caller writes `[AllowShared] BufferSource param`.
-		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, ExtAttrAllowShared) {
 			errs = append(errs, &ValidationError{
 				Rule:    "migrate-allowshared",
 				Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -139,7 +139,7 @@ func (attr *Attribute) validateMember(defs *Definitions) []error {
 
 	// migrate-allowshared: [AllowShared] on a BufferSource attribute is deprecated.
 	// Note: [AllowShared] is an attribute-level ExtAttr, not a type-level one.
-	if attr.IDLType.Base == "BufferSource" && hasExtAttr(attr.ExtAttrs, "AllowShared") {
+	if attr.IDLType.Base == "BufferSource" && hasExtAttr(attr.ExtAttrs, ExtAttrAllowShared) {
 		errs = append(errs, &ValidationError{
 			Rule:    "migrate-allowshared",
 			Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -220,7 +220,7 @@ func (iface *Interface) validate(defs *Definitions) []error {
 				errs = append(errs, validateArgDictRules(arg, i, con.Arguments, defs)...)
 				errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
 				errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
-				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, ExtAttrAllowShared) {
 					errs = append(errs, &ValidationError{
 						Rule:    "migrate-allowshared",
 						Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -248,7 +248,7 @@ func (iface *Interface) validate(defs *Definitions) []error {
 				errs = append(errs, validateArgDictRules(arg, i, il.Arguments, defs)...)
 				errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
 				errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
-				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+				if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, ExtAttrAllowShared) {
 					errs = append(errs, &ValidationError{
 						Rule:    "migrate-allowshared",
 						Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -339,7 +339,7 @@ func (cb *CallbackFunction) validate(defs *Definitions) []error {
 		errs = append(errs, validateArgDictRules(arg, i, cb.Arguments, defs)...)
 		errs = append(errs, checkLegacyExtAttrs(arg.ExtAttrs)...)
 		errs = append(errs, checkLegacyIDLType(arg.IDLType)...)
-		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, "AllowShared") {
+		if arg.IDLType.Base == "BufferSource" && hasExtAttr(arg.ExtAttrs, ExtAttrAllowShared) {
 			errs = append(errs, &ValidationError{
 				Rule:    "migrate-allowshared",
 				Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -495,7 +495,7 @@ func checkAllowSharedIDLType(t *IDLType) []error {
 		return nil
 	}
 	var errs []error
-	if t.Base == "BufferSource" && hasExtAttr(t.ExtAttrs, "AllowShared") {
+	if t.Base == "BufferSource" && hasExtAttr(t.ExtAttrs, ExtAttrAllowShared) {
 		errs = append(errs, &ValidationError{
 			Rule:    "migrate-allowshared",
 			Message: "[AllowShared] BufferSource is now replaced with AllowSharedBufferSource.",
@@ -510,13 +510,13 @@ func checkAllowSharedIDLType(t *IDLType) []error {
 // idlTypeIncludesEnforceRange reports whether the IDLType carries an
 // [EnforceRange] extended attribute, either directly or via a one-level typedef.
 func idlTypeIncludesEnforceRange(idlType *IDLType, defs *Definitions) bool {
-	if hasExtAttr(idlType.ExtAttrs, "EnforceRange") {
+	if hasExtAttr(idlType.ExtAttrs, ExtAttrEnforceRange) {
 		return true
 	}
 	if !idlType.Union && idlType.Base != "" {
 		if def, ok := defs.Unique[semanticName(idlType.Base)]; ok {
 			if td, ok := def.(*Typedef); ok {
-				return hasExtAttr(td.IDLType.ExtAttrs, "EnforceRange")
+				return hasExtAttr(td.IDLType.ExtAttrs, ExtAttrEnforceRange)
 			}
 		}
 	}
