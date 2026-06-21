@@ -3,6 +3,7 @@ package typemap
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/iansmith/webidl/webidl"
@@ -58,9 +59,9 @@ type Mapper struct{}
 
 // MapType maps a single IDLType to a GoType. Returns an error if t is nil,
 // if t has both Union and Generic set (malformed node), or if t carries no
-// recognisable type information (Union=false, Generic="", Base=""). Stubs for
-// union and generic type families will be replaced in follow-on tickets
-// (CATH-45 through CATH-48).
+// recognisable type information (Union=false, Generic="", Base=""). Union types
+// remain as unresolved stubs; all generic families are handled (sequences,
+// record, Promise).
 //
 // Note: a nil error does not guarantee a fully-resolved type. Stubs and
 // unrecognised base types return GoType{Name:"any", Unresolved:true} with no
@@ -102,14 +103,14 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 // Generic and union resolution
 // ---------------------------------------------------------------------------
 
-// stubUnion is a placeholder for union resolution, replaced by the real
-// implementation in a follow-on ticket (CATH-47).
+// stubUnion is a placeholder for union resolution; union mapping is not yet implemented.
 func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
 
 // mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
 // IDL sequence-like generics (sequence, FrozenArray, ObservableArray) map to Go
-// slices; async_sequence is IDL-to-JS only and returns an error. Promise, record,
-// and any future generics remain as Unresolved stubs (CATH-48+).
+// slices; async_sequence is IDL-to-JS only and returns an error. record maps to
+// map[string]V; Promise maps to any (see case "Promise" for the rationale).
+// Other generics remain as Unresolved stubs until a follow-on ticket implements them.
 //
 // FrozenArray and ObservableArray are both mapped to plain []T. FrozenArray is
 // immutable in WebIDL — callers must not mutate the returned slice. ObservableArray
@@ -127,10 +128,52 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		return GoType{Name: "[]" + elem.String(), Unresolved: elem.Unresolved}, nil
 	case "async_sequence":
 		return GoType{}, fmt.Errorf("MapType: async_sequence is IDL-to-JS only and should have been rejected by validate.go")
+	case "record":
+		if len(t.Subtypes) != 2 {
+			return GoType{}, fmt.Errorf("MapType: record requires exactly 2 type parameters, got %d", len(t.Subtypes))
+		}
+		// WebIDL §3.2.26 restricts record key types to DOMString, USVString, or
+		// ByteString. Use webidl.StringTypes (the parser's authoritative list) rather
+		// than nonScalarGoTypes, which also contains CSSOMString and would silently
+		// accept an invalid key.
+		if t.Subtypes[0] == nil {
+			return GoType{}, fmt.Errorf("MapType: record key type is nil")
+		}
+		if !isRecordKeyType(t.Subtypes[0].Base) {
+			return GoType{}, fmt.Errorf("MapType: record key type must be DOMString, USVString, or ByteString, got %q", t.Subtypes[0].Base)
+		}
+		val, err := m.MapType(t.Subtypes[1])
+		if err != nil {
+			return GoType{}, fmt.Errorf("record value: %w", err)
+		}
+		return GoType{Name: "map[string]" + val.String(), Unresolved: val.Unresolved}, nil
+	case "Promise":
+		// Promise<T> is mapped to any (intentional punt, not an unresolved stub).
+		// Go cannot faithfully represent single-resolution Promise semantics at the
+		// type level without a dedicated runtime type. Mapping to any unblocks codegen;
+		// callers that need typed resolution narrow with type assertions. This is
+		// revisable once the codegen layer has a clearer picture of Promise call sites.
+		if len(t.Subtypes) != 1 {
+			return GoType{}, fmt.Errorf("MapType: Promise requires exactly 1 type parameter, got %d", len(t.Subtypes))
+		}
+		// Validate the type parameter even though its resolved GoType is discarded.
+		// This surfaces errors in T (e.g. async_sequence, which is IDL-to-JS only)
+		// rather than silently accepting Promise<invalid>.
+		if _, err := m.MapType(t.Subtypes[0]); err != nil {
+			return GoType{}, fmt.Errorf("Promise type parameter: %w", err)
+		}
+		return GoType{Name: "any"}, nil
 	default:
-		// Promise, record, and future generics remain as stubs (CATH-48+).
+		// Other generics remain as stubs until a follow-on ticket implements them.
 		return GoType{Name: "any", Unresolved: true}, nil
 	}
+}
+
+// isRecordKeyType reports whether base is a valid WebIDL record key type.
+// Only DOMString, USVString, and ByteString are permitted (WebIDL §3.2.26).
+// Uses webidl.StringTypes as the single source of truth, matching the parser.
+func isRecordKeyType(base string) bool {
+	return slices.Contains(webidl.StringTypes, base)
 }
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared
