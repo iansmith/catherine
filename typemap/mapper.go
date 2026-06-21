@@ -81,7 +81,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 	case t.Union && t.Generic != "":
 		return GoType{}, fmt.Errorf("MapType: IDLType has both Union and Generic set (malformed node)")
 	case t.Union:
-		got = stubUnion(t)
+		got = unionToAny(t)
 	case t.Generic != "":
 		var genErr error
 		got, genErr = m.mapGeneric(t)
@@ -90,6 +90,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 		}
 	case t.Base != "":
 		got = mapBase(t)
+		got.Annotation = extAttrAnnotation(t.ExtAttrs)
 	default:
 		return GoType{}, fmt.Errorf("MapType: IDLType has neither Union, Generic, nor Base set")
 	}
@@ -107,8 +108,12 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 // Generic and union resolution
 // ---------------------------------------------------------------------------
 
-// stubUnion is a placeholder for union resolution; union mapping is not yet implemented.
-func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
+// unionToAny maps all IDL union types to Go's any. This is an intentional
+// design decision: union→any loses static type information but is the
+// simplest mapping that unblocks codegen. Callers that need per-member
+// typing narrow with type assertions. Unresolved is false because this is
+// a deliberate choice, not an unimplemented stub.
+func unionToAny(_ *webidl.IDLType) GoType { return GoType{Name: "any"} }
 
 // mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
 // IDL sequence-like generics (sequence, FrozenArray, ObservableArray) map to Go
@@ -178,6 +183,20 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 // Uses webidl.StringTypes as the single source of truth, matching the parser.
 func isRecordKeyType(base string) bool {
 	return slices.Contains(webidl.StringTypes, base)
+}
+
+// extAttrAnnotation scans a list of IDL extended attributes and returns the
+// name of the first recognised type-modifier attribute ("Clamp",
+// "EnforceRange", "AllowShared"). Returns "" when none is present or when
+// all attributes are unrecognised — unknown attributes are silently ignored.
+func extAttrAnnotation(attrs []*webidl.ExtAttr) string {
+	for _, a := range attrs {
+		switch a.Name {
+		case "Clamp", "EnforceRange", "AllowShared":
+			return a.Name
+		}
+	}
+	return ""
 }
 
 // scalarGoTypes maps IDL primitive scalar base names to their Go predeclared
