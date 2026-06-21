@@ -369,6 +369,152 @@ func TestMapTypeExtAttrAllowShared(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// CATH-48: adversary gap tests
+// ---------------------------------------------------------------------------
+
+// Gap 1: union returns exactly GoType{Name:"any"} — no Pointer, no Annotation
+func TestMapTypeUnionReturnsExactGoType(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType(union) returned error: %v", err)
+	}
+	want := GoType{Name: "any"}
+	if got != want {
+		t.Errorf("MapType(union) = %#v, want %#v", got, want)
+	}
+}
+
+// Gap 2: union with a malformed member must not propagate an error — union→any
+// discards member types entirely; it must not recurse into them.
+func TestMapTypeUnionWithMalformedMemberStillReturnsAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	malformed := &webidl.IDLType{Union: true, Generic: "sequence"} // both set = malformed
+	outer := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, malformed},
+	}
+	got, err := m.MapType(outer)
+	if err != nil {
+		t.Fatalf("MapType(union with malformed member) returned error: %v; union→any must not recurse into members", err)
+	}
+	if got.Name != "any" {
+		t.Errorf("MapType(union with malformed member).Name = %q, want \"any\"", got.Name)
+	}
+	if got.Unresolved {
+		t.Error("MapType(union with malformed member).Unresolved = true; must be intentional (false)")
+	}
+}
+
+// Gap 3a: [Clamp] on a signed type — tests annotation isn't keyed on a specific type name.
+func TestMapTypeExtAttrClampOnSignedLong(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Base:     "long",
+		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType([Clamp] long) returned error: %v", err)
+	}
+	if got.Name != "int32" {
+		t.Errorf("MapType([Clamp] long).Name = %q, want \"int32\"", got.Name)
+	}
+	if got.Annotation != "Clamp" {
+		t.Errorf("MapType([Clamp] long).Annotation = %q, want \"Clamp\"", got.Annotation)
+	}
+}
+
+// Gap 3b: [EnforceRange] on an unsigned type — tests annotation isn't keyed on specific names.
+func TestMapTypeExtAttrEnforceRangeOnUnsignedLong(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Base:     "unsigned long",
+		ExtAttrs: []*webidl.ExtAttr{{Name: "EnforceRange"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType([EnforceRange] unsigned long) returned error: %v", err)
+	}
+	if got.Name != "uint32" {
+		t.Errorf("MapType([EnforceRange] unsigned long).Name = %q, want \"uint32\"", got.Name)
+	}
+	if got.Annotation != "EnforceRange" {
+		t.Errorf("MapType([EnforceRange] unsigned long).Annotation = %q, want \"EnforceRange\"", got.Annotation)
+	}
+}
+
+// Gap 4: [AllowShared] on a resolved base type (not just the unresolved fallback).
+func TestMapTypeExtAttrAllowSharedOnResolvedType(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Base:     "octet",
+		ExtAttrs: []*webidl.ExtAttr{{Name: "AllowShared"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType([AllowShared] octet) returned error: %v", err)
+	}
+	if got.Name != "uint8" {
+		t.Errorf("MapType([AllowShared] octet).Name = %q, want \"uint8\"", got.Name)
+	}
+	if got.Annotation != "AllowShared" {
+		t.Errorf("MapType([AllowShared] octet).Annotation = %q, want \"AllowShared\"", got.Annotation)
+	}
+}
+
+// Gap 6: [Clamp] ExtAttr on a union node must not set Annotation — annotation
+// post-processing must not bleed into the union→any dispatch path.
+func TestMapTypeUnionWithClampExtAttrNoAnnotation(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
+		ExtAttrs: []*webidl.ExtAttr{{Name: "Clamp"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType([Clamp] (DOMString or long)) returned error: %v", err)
+	}
+	if got.Annotation != "" {
+		t.Errorf("MapType([Clamp] union).Annotation = %q, want \"\"; annotation must not bleed onto union→any", got.Annotation)
+	}
+	if got.Unresolved {
+		t.Error("MapType([Clamp] union).Unresolved = true; must be intentional (false)")
+	}
+}
+
+// Gap 7: companion test for AllowShared verifying the base type name and Unresolved state.
+func TestMapTypeExtAttrAllowSharedBaseTypeIsUnresolvedAny(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	idlType := &webidl.IDLType{
+		Base:     "ArrayBuffer",
+		ExtAttrs: []*webidl.ExtAttr{{Name: "AllowShared"}},
+	}
+	got, err := m.MapType(idlType)
+	if err != nil {
+		t.Fatalf("MapType([AllowShared] ArrayBuffer) returned error: %v", err)
+	}
+	if got.Name != "any" {
+		t.Errorf("MapType([AllowShared] ArrayBuffer).Name = %q, want \"any\" (unresolved fallback)", got.Name)
+	}
+	if !got.Unresolved {
+		t.Error("MapType([AllowShared] ArrayBuffer).Unresolved = false; ArrayBuffer has no known Go mapping, must be Unresolved")
+	}
+}
+
 func TestMapTypeGenericRecordResolved(t *testing.T) {
 	t.Parallel()
 	m := Mapper{}
