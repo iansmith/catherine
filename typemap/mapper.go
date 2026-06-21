@@ -59,9 +59,9 @@ type Mapper struct{}
 
 // MapType maps a single IDLType to a GoType. Returns an error if t is nil,
 // if t has both Union and Generic set (malformed node), or if t carries no
-// recognisable type information (Union=false, Generic="", Base=""). Stubs for
-// union and generic type families will be replaced in follow-on tickets
-// (CATH-45 through CATH-48).
+// recognisable type information (Union=false, Generic="", Base=""). Union types
+// remain as unresolved stubs; all generic families are handled (sequences,
+// record, Promise).
 //
 // Note: a nil error does not guarantee a fully-resolved type. Stubs and
 // unrecognised base types return GoType{Name:"any", Unresolved:true} with no
@@ -103,8 +103,7 @@ func (m Mapper) MapType(t *webidl.IDLType) (GoType, error) {
 // Generic and union resolution
 // ---------------------------------------------------------------------------
 
-// stubUnion is a placeholder for union resolution, replaced by the real
-// implementation in a follow-on ticket (CATH-47).
+// stubUnion is a placeholder for union resolution; union mapping is not yet implemented.
 func stubUnion(_ *webidl.IDLType) GoType { return GoType{Name: "any", Unresolved: true} }
 
 // mapGeneric resolves IDLType nodes with a non-empty Generic field. The three
@@ -137,6 +136,9 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		// ByteString. Use webidl.StringTypes (the parser's authoritative list) rather
 		// than nonScalarGoTypes, which also contains CSSOMString and would silently
 		// accept an invalid key.
+		if t.Subtypes[0] == nil {
+			return GoType{}, fmt.Errorf("MapType: record key type is nil")
+		}
 		if !isRecordKeyType(t.Subtypes[0].Base) {
 			return GoType{}, fmt.Errorf("MapType: record key type must be DOMString, USVString, or ByteString, got %q", t.Subtypes[0].Base)
 		}
@@ -151,8 +153,8 @@ func (m Mapper) mapGeneric(t *webidl.IDLType) (GoType, error) {
 		// type level without a dedicated runtime type. Mapping to any unblocks codegen;
 		// callers that need typed resolution narrow with type assertions. This is
 		// revisable once the codegen layer has a clearer picture of Promise call sites.
-		if len(t.Subtypes) == 0 {
-			return GoType{}, fmt.Errorf("MapType: Promise requires a type parameter")
+		if len(t.Subtypes) != 1 {
+			return GoType{}, fmt.Errorf("MapType: Promise requires exactly 1 type parameter, got %d", len(t.Subtypes))
 		}
 		// Validate the type parameter even though its resolved GoType is discarded.
 		// This surfaces errors in T (e.g. async_sequence, which is IDL-to-JS only)
