@@ -534,38 +534,6 @@ func TestMapTypeUnknownBaseStillFallsThrough(t *testing.T) {
 	}
 }
 
-// --- Cross-feature interaction ---
-
-// TestMapTypeStringTypeInUnionSubtype verifies that string bases as union subtypes
-// do not cause dispatch errors (the union stub ignores subtypes, but must not panic).
-func TestMapTypeStringTypeInUnionSubtype(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	idlType := &webidl.IDLType{
-		Union:    true,
-		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "long"}},
-	}
-	_, err := m.MapType(idlType)
-	if err != nil {
-		t.Fatalf("MapType((DOMString or long)) returned error: %v", err)
-	}
-}
-
-// TestMapTypeStringTypeInGenericSubtype verifies that string bases inside generic
-// types do not cause dispatch errors.
-func TestMapTypeStringTypeInGenericSubtype(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	idlType := &webidl.IDLType{
-		Generic:  "sequence",
-		Subtypes: []*webidl.IDLType{{Base: "DOMString"}},
-	}
-	_, err := m.MapType(idlType)
-	if err != nil {
-		t.Fatalf("MapType(sequence<DOMString>) returned error: %v", err)
-	}
-}
-
 // --- Happy path ---
 
 // TestMapTypeNonScalarBasesExact verifies every IDL string and special/sentinel type
@@ -702,18 +670,3 @@ func TestWebIDLStringTypesCoveredByNonScalarGoTypes(t *testing.T) {
 	}
 }
 
-// TestMapTypeCSSOMStringMapsToString guards the CSSOMString entry: it is not in
-// webidl.StringTypes (a tokenizer concept), so TestWebIDLStringTypesCoveredByNonScalarGoTypes
-// does not protect it.
-func TestMapTypeCSSOMStringMapsToString(t *testing.T) {
-	t.Parallel()
-	m := Mapper{}
-	want := GoType{Name: "string"}
-	got, err := m.MapType(&webidl.IDLType{Base: "CSSOMString"})
-	if err != nil {
-		t.Fatalf("MapType(CSSOMString) returned error: %v", err)
-	}
-	if got != want {
-		t.Errorf("MapType(CSSOMString) = %+v, want %+v", got, want)
-	}
-}

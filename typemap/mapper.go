@@ -134,7 +134,6 @@ var scalarGoTypes = map[string]string{
 var nonScalarGoTypes = map[string]string{
 	// string types
 	"ByteString":  "string",
-	"CppJSString": "string",
 	"CSSOMString": "string", // CSS Object Model string; recognized by webidl/validate.go
 	"DOMString":   "string",
 	"USVString":   "string",
