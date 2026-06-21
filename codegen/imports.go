@@ -13,7 +13,10 @@ func renderImports(paths map[string]struct{}) string {
 
 	var stdlib, external []string
 	for p := range paths {
-		if strings.Contains(p, "/") {
+		// External module paths always have a dot in the first path component
+		// (e.g. "github.com/foo/bar"). Stdlib paths never do (e.g. "net", "encoding").
+		first, _, _ := strings.Cut(p, "/")
+		if strings.Contains(first, ".") {
 			external = append(external, p)
 		} else {
 			stdlib = append(stdlib, p)

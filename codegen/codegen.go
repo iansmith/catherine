@@ -2,6 +2,8 @@
 // gofmt-canonical Go source files from WebIDL definitions.
 package codegen
 
+import "strings"
+
 // Diagnostic is a single structured message from the code-generation pipeline.
 type Diagnostic struct {
 	Severity string // "error" or "warning"
@@ -52,14 +54,14 @@ func (d *Diagnostics) Format() string {
 	if len(d.entries) == 0 {
 		return ""
 	}
-	var b []byte
+	var sb strings.Builder
 	for _, e := range d.entries {
-		b = append(b, e.Severity...)
-		b = append(b, ": "...)
-		b = append(b, e.Message...)
-		b = append(b, '\n')
+		sb.WriteString(e.Severity)
+		sb.WriteString(": ")
+		sb.WriteString(e.Message)
+		sb.WriteByte('\n')
 	}
-	return string(b)
+	return sb.String()
 }
 
 // ImportTracker collects import paths and renders a grouped, sorted import
