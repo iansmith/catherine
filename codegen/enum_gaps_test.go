@@ -3,6 +3,8 @@ package codegen_test
 // Adversary gap tests added after Phase 0 review.
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -368,6 +370,65 @@ func TestEnumDeclValueWithDot(t *testing.T) {
 	}
 	if strings.Contains(s, "Version.") {
 		t.Errorf("output = %q; const name must not contain a dot", s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gap 6b: parse helper runtime behaviour — subprocess compilation (coverage)
+// ---------------------------------------------------------------------------
+
+func TestEnumDeclParseHelperRuntimeBehaviour(t *testing.T) {
+	t.Parallel()
+	// Compile and run the generated code in a subprocess to verify that the
+	// parse helper actually returns correct values at runtime — not just that
+	// it compiles. This is the only test that catches a stub implementation
+	// that always returns ("", false).
+	diag := codegen.NewDiagnostics()
+	decl := codegen.NewEnumDecl("EndingType", []string{"transparent", "native"}, diag)
+	if decl == nil {
+		t.Fatal("NewEnumDecl returned nil")
+	}
+	f := codegen.NewFile("main")
+	f.AddDecl(decl)
+	out, err := f.Render()
+	if err != nil {
+		t.Fatalf("File.Render() error: %v", err)
+	}
+
+	// Append a main() that exercises ParseEndingType and panics on failure.
+	// The subprocess exits non-zero on panic, which exec detects.
+	src := string(out) + `
+func main() {
+	v, ok := ParseEndingType("transparent")
+	if !ok {
+		panic("ParseEndingType(\"transparent\") returned ok=false, want true")
+	}
+	if v != EndingTypeTransparent {
+		panic("ParseEndingType(\"transparent\") returned wrong value")
+	}
+
+	v2, ok2 := ParseEndingType("native")
+	if !ok2 {
+		panic("ParseEndingType(\"native\") returned ok=false, want true")
+	}
+	if v2 != EndingTypeNative {
+		panic("ParseEndingType(\"native\") returned wrong value")
+	}
+
+	_, ok3 := ParseEndingType("unknown-value")
+	if ok3 {
+		panic("ParseEndingType(\"unknown-value\") returned ok=true, want false")
+	}
+}
+`
+	dir := t.TempDir()
+	srcFile := dir + "/main.go"
+	if err := os.WriteFile(srcFile, []byte(src), 0600); err != nil {
+		t.Fatalf("os.WriteFile: %v", err)
+	}
+	cmd := exec.Command("go", "run", srcFile)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated ParseEndingType failed at runtime:\n%s\nerror: %v", output, err)
 	}
 }
 
