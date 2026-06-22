@@ -450,3 +450,75 @@ func TestEnumDeclValueWithSpace(t *testing.T) {
 		t.Errorf("output = %q; IDL value \"text plain\" must be preserved as string literal", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Review-finding fixes — regression tests
+// ---------------------------------------------------------------------------
+
+func TestEnumDeclNilDiagWithCollisionNoPanic(t *testing.T) {
+	t.Parallel()
+	// Passing nil for diag must not panic, even when a const-name collision occurs.
+	decl := codegen.NewEnumDecl("State", []string{"no-change", "no_change"}, nil)
+	if decl == nil {
+		t.Fatal("NewEnumDecl returned nil with nil diag")
+	}
+}
+
+func TestEnumDeclEmptyIdlNameEmitsDiagnostic(t *testing.T) {
+	t.Parallel()
+	// An empty idlName has no letter/digit content and must produce an error
+	// diagnostic rather than silently emitting type X.
+	diag := codegen.NewDiagnostics()
+	codegen.NewEnumDecl("", []string{"a"}, diag)
+	if diag.IsClean() {
+		t.Error("expected error diagnostic for empty idlName; diagnostics are clean")
+	}
+}
+
+func TestEnumDeclAllPunctIdlNameEmitsDiagnostic(t *testing.T) {
+	t.Parallel()
+	// An all-punctuation idlName (e.g. "---") has no alnum content and must
+	// produce an error diagnostic.
+	diag := codegen.NewDiagnostics()
+	codegen.NewEnumDecl("---", []string{"a"}, diag)
+	if diag.IsClean() {
+		t.Error("expected error diagnostic for all-punct idlName; diagnostics are clean")
+	}
+}
+
+func TestEnumDeclDuplicateTypenameInFileRendersError(t *testing.T) {
+	t.Parallel()
+	// "readyState" and "ready-state" both sanitize to "ReadyState". Adding both
+	// EnumDecls to one File must produce an error from Render(), not silent
+	// invalid Go that only go build would catch.
+	diag := codegen.NewDiagnostics()
+	d1 := codegen.NewEnumDecl("readyState", []string{"open"}, diag)
+	d2 := codegen.NewEnumDecl("ready-state", []string{"closed"}, diag)
+	f := codegen.NewFile("gen")
+	f.AddDecl(d1)
+	f.AddDecl(d2)
+	_, err := f.Render()
+	if err == nil {
+		t.Error("File.Render() must return an error when two EnumDecls share the same sanitized type name")
+	}
+}
+
+func TestEnumDeclEmptyValueParseHelperHasWarningComment(t *testing.T) {
+	t.Parallel()
+	// When "" is a valid IDL value, the generated ParseFoo function must carry
+	// a comment warning callers to always check the bool return.
+	diag := codegen.NewDiagnostics()
+	decl := codegen.NewEnumDecl("Foo", []string{"a", ""}, diag)
+	if decl == nil {
+		t.Fatal("NewEnumDecl returned nil")
+	}
+	f := codegen.NewFile("gen")
+	f.AddDecl(decl)
+	out, err := f.Render()
+	if err != nil {
+		t.Fatalf("File.Render() error: %v", err)
+	}
+	if !strings.Contains(string(out), "always check the bool") {
+		t.Errorf("generated ParseFoo must warn about the bool check when \"\" is a valid member:\n%s", out)
+	}
+}

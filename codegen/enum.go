@@ -22,7 +22,25 @@ type EnumDecl struct {
 
 // NewEnumDecl creates an EnumDecl from a WebIDL enum's name and string values.
 // Sanitization collisions are reported to diag (first value wins).
+// diag must not be nil.
 func NewEnumDecl(idlName string, idlValues []string, diag *Diagnostics) *EnumDecl {
+	if diag == nil {
+		diag = NewDiagnostics()
+	}
+
+	// Reject names with no letter or digit content — they produce the fallback
+	// identifier "X", which is valid Go but almost certainly a caller bug.
+	hasAlnum := false
+	for _, r := range idlName {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasAlnum = true
+			break
+		}
+	}
+	if !hasAlnum {
+		diag.Add("error", fmt.Sprintf("enum name %q has no letter or digit content; cannot produce a valid Go type name", idlName))
+	}
+
 	typeName := enumIdent(idlName)
 
 	seen := make(map[string]bool)
@@ -31,7 +49,7 @@ func NewEnumDecl(idlName string, idlValues []string, diag *Diagnostics) *EnumDec
 		suffix := enumValueSanitize(v)
 		constName := typeName + suffix
 		if seen[constName] {
-			diag.Add("error", fmt.Sprintf("enum %s: const name collision for %q (maps to %s; first value wins)", idlName, v, constName))
+			diag.Add("error", fmt.Sprintf("enum %q: const name collision for %q (maps to %s; first value wins)", idlName, v, constName))
 			continue
 		}
 		seen[constName] = true
@@ -40,6 +58,8 @@ func NewEnumDecl(idlName string, idlValues []string, diag *Diagnostics) *EnumDec
 
 	return &EnumDecl{typeName: typeName, entries: entries}
 }
+
+func (e *EnumDecl) declName() string { return e.typeName }
 
 // declSource implements Decl. It emits:
 //
@@ -72,6 +92,26 @@ func (e *EnumDecl) declSource() string {
 		sb.WriteString(")\n")
 	}
 
+	// When "" is a valid IDL value, the not-found return ("", false) compares
+	// equal to the Empty const. Generate a warning comment so callers know
+	// to always check the bool.
+	hasEmptyValue := false
+	for _, entry := range e.entries {
+		if entry.idlValue == "" {
+			hasEmptyValue = true
+			break
+		}
+	}
+	if hasEmptyValue {
+		sb.WriteString("\n// Parse")
+		sb.WriteString(e.typeName)
+		sb.WriteString(" returns the ")
+		sb.WriteString(e.typeName)
+		sb.WriteString(" constant for s and true if s is a valid IDL value.\n")
+		sb.WriteString("// Note: the not-found return equals ")
+		sb.WriteString(e.typeName)
+		sb.WriteString("Empty because \"\" is a valid member; always check the bool.\n")
+	}
 	sb.WriteString("\nfunc Parse")
 	sb.WriteString(e.typeName)
 	sb.WriteString("(s string) (")
