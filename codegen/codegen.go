@@ -93,6 +93,10 @@ func (t *ImportTracker) Render() string {
 // Struct, Interface, etc.). Concrete Decl types are added in later tickets.
 type Decl interface {
 	declSource() string
+	// declName returns the primary Go identifier declared by this node (e.g.
+	// the type name for an EnumDecl). File.Render uses it to detect duplicate
+	// declarations before passing source to go/format.
+	declName() string
 }
 
 // File is the root of the CodeNode tree. It holds a package name, an optional
