@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -30,13 +31,9 @@ func NewEnumDecl(idlName string, idlValues []string, diag *Diagnostics) *EnumDec
 
 	// Reject names with no letter or digit content — they produce the fallback
 	// identifier "X", which is valid Go but almost certainly a caller bug.
-	hasAlnum := false
-	for _, r := range idlName {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasAlnum = true
-			break
-		}
-	}
+	hasAlnum := strings.ContainsFunc(idlName, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	})
 	if !hasAlnum {
 		diag.Add("error", fmt.Sprintf("enum name %q has no letter or digit content; cannot produce a valid Go type name", idlName))
 	}
@@ -95,13 +92,9 @@ func (e *EnumDecl) declSource() string {
 	// When "" is a valid IDL value, the not-found return ("", false) compares
 	// equal to the Empty const. Generate a warning comment so callers know
 	// to always check the bool.
-	hasEmptyValue := false
-	for _, entry := range e.entries {
-		if entry.idlValue == "" {
-			hasEmptyValue = true
-			break
-		}
-	}
+	hasEmptyValue := slices.ContainsFunc(e.entries, func(entry enumEntry) bool {
+		return entry.idlValue == ""
+	})
 	if hasEmptyValue {
 		sb.WriteString("\n// Parse")
 		sb.WriteString(e.typeName)
