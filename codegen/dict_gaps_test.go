@@ -446,16 +446,19 @@ func TestDictDeclInheritanceWithMultipleOwnFields(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	src := string(out)
+	// gofmt aligns multi-field structs with extra spaces; collapse whitespace
+	// runs so field-and-type assertions don't depend on exact column spacing.
+	fields := normalizeSpaces(src)
 	if !strings.Contains(src, "\tEventInit\n") {
 		t.Errorf("embedded parent must appear even with multiple own fields:\n%s", src)
 	}
-	if !strings.Contains(src, "Detail *any") {
-		t.Errorf("optional field Detail missing:\n%s", src)
+	if !strings.Contains(fields, "Detail *any") {
+		t.Errorf("optional field Detail *any missing:\n%s", src)
 	}
-	if !strings.Contains(src, "Bubbles bool") {
+	if !strings.Contains(fields, "Bubbles bool") {
 		t.Errorf("required field Bubbles missing:\n%s", src)
 	}
-	if !strings.Contains(src, "Target *string") {
-		t.Errorf("optional field Target missing:\n%s", src)
+	if !strings.Contains(fields, "Target *string") {
+		t.Errorf("optional field Target *string missing:\n%s", src)
 	}
 }

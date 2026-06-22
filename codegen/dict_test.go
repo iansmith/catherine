@@ -2,6 +2,7 @@ package codegen_test
 
 import (
 	"go/format"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -89,10 +90,13 @@ func TestDictDeclRequiredAndOptionalFieldsTogether(t *testing.T) {
 	}
 	src := string(out)
 
-	if !strings.Contains(src, "Name string") {
+	// gofmt aligns multi-field structs with extra spaces; collapse whitespace
+	// runs so field-and-type assertions don't depend on exact column spacing.
+	fields := normalizeSpaces(src)
+	if !strings.Contains(fields, "Name string") {
 		t.Errorf("required Name must be value type:\n%s", src)
 	}
-	if !strings.Contains(src, "Label *string") {
+	if !strings.Contains(fields, "Label *string") {
 		t.Errorf("optional Label must be pointer type:\n%s", src)
 	}
 	if !strings.Contains(src, `json:"name"`) {
@@ -435,4 +439,13 @@ func TestDictDeclTwoDistinctDictsInOneFile(t *testing.T) {
 	if !strings.Contains(src, "type Beta struct") {
 		t.Errorf("Beta missing:\n%s", src)
 	}
+}
+
+// normalizeSpaces collapses each run of spaces and tabs to a single space so
+// that "FieldName Type" assertions survive gofmt's column alignment in
+// multi-field structs. Newlines are preserved.
+var spaceRun = regexp.MustCompile(`[ \t]+`)
+
+func normalizeSpaces(s string) string {
+	return spaceRun.ReplaceAllString(s, " ")
 }
