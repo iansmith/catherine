@@ -47,20 +47,33 @@ func ParseExtAttrs(attrs []*webidl.ExtAttr, diag *Diagnostics) ExtAttrSet {
 	for _, a := range attrs {
 		switch a.Name {
 		case "Exposed":
+			if s.ExposedScopes != nil {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q appears more than once — last value wins", a.Name))
+			}
 			s.ExposedScopes = extAttrExposedScopes(a.RHS)
 		case "SecureContext":
 			s.SecureContext = true
 		case "RuntimeEnabled":
+			if s.RuntimeEnabled != "" {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q appears more than once — last value wins", a.Name))
+			}
 			if a.RHS != nil && a.RHS.Type == "identifier" {
 				s.RuntimeEnabled = a.RHS.Value
+			} else if a.RHS != nil {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q: expected identifier RHS, got %q — ignored", a.Name, a.RHS.Type))
 			}
 		case "RaisesException":
 			s.RaisesException = true
 		case "Custom":
 			s.Custom = true
 		case "PutForwards":
+			if s.PutForwards != "" {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q appears more than once — last value wins", a.Name))
+			}
 			if a.RHS != nil && a.RHS.Type == "identifier" {
 				s.PutForwards = a.RHS.Value
+			} else if a.RHS != nil {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q: expected identifier RHS, got %q — ignored", a.Name, a.RHS.Type))
 			}
 		case "Replaceable":
 			s.Replaceable = true
@@ -78,6 +91,8 @@ func ParseExtAttrs(attrs []*webidl.ExtAttr, diag *Diagnostics) ExtAttrSet {
 			s.ReflectPresent = true
 			if a.RHS != nil && a.RHS.Type == "identifier" {
 				s.ReflectAttr = a.RHS.Value
+			} else if a.RHS != nil {
+				diag.Add("warning", fmt.Sprintf("extended attribute %q: expected identifier RHS, got %q — ignored", a.Name, a.RHS.Type))
 			}
 		case "CEReactions":
 			s.CEReactions = true
