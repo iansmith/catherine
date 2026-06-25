@@ -16,10 +16,16 @@ import (
 	"os"
 	"strings"
 
+	"github.com/iansmith/webidl/codegen"
 	"github.com/iansmith/webidl/webidl"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "codegen" {
+		runCodegen(os.Args[2:])
+		return
+	}
+
 	tree := flag.Bool("tree", false, "print a human-readable tree instead of JSON")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: webidl [-tree] [path]")
@@ -314,4 +320,53 @@ func quoteAll(ss []string) string {
 		out = append(out, fmt.Sprintf("%q", s))
 	}
 	return strings.Join(out, ", ")
+}
+
+func runCodegen(args []string) {
+	fs := flag.NewFlagSet("codegen", flag.ExitOnError)
+	outDir := fs.String("o", ".", "output directory for generated .go files")
+	pkgName := fs.String("pkg", "", "Go package name for generated files (required)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: webidl codegen -pkg name [-o dir] file.idl ...")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	if *pkgName == "" {
+		fmt.Fprintln(os.Stderr, "codegen: -pkg is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	var allDefs []webidl.Definition
+	for _, path := range fs.Args() {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read:", err)
+			os.Exit(1)
+		}
+		defs, err := webidl.Parse(string(src))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parse %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		allDefs = append(allDefs, defs...)
+	}
+
+	ir, errs := webidl.Merge(allDefs)
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, "merge:", e)
+		}
+		os.Exit(1)
+	}
+
+	if err := codegen.Generate(ir, codegen.Options{
+		OutputDir:   *outDir,
+		PackageName: *pkgName,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, "codegen:", err)
+		os.Exit(1)
+	}
 }

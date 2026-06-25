@@ -1,6 +1,9 @@
 package webidl
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // IR is the fully-resolved view of a set of Web IDL definitions produced by
 // Merge. It is distinct from the raw []Definition slice returned by Parse,
@@ -27,6 +30,26 @@ func (ir *IR) Lookup(name string) *MergedDef {
 		return nil
 	}
 	return ir.defs[semanticName(name)]
+}
+
+// All returns every definition in the IR in a deterministic, name-sorted order.
+// Mixin interfaces are included; callers that want only non-mixin definitions
+// should filter by Primary.(*Interface).Variant != IfaceMixin.
+// For a nil IR, All returns nil.
+func (ir *IR) All() []*MergedDef {
+	if ir == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(ir.defs))
+	for k := range ir.defs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*MergedDef, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, ir.defs[k])
+	}
+	return out
 }
 
 // MergedDef is the resolved representation of a single named definition in the
