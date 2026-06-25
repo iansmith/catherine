@@ -313,10 +313,18 @@ func buildCallbackDecls(idlName string, members []webidl.Member, tm typemap.Mapp
 		op := ops[0]
 		params := buildParams(op.Arguments, tm, diag, idlName)
 		retType := buildReturnType(op.ReturnType, tm, diag, idlName, op.Name)
+		raisesException := false
+		for _, attr := range op.ExtAttrs {
+			if attr.Name == "RaisesException" {
+				raisesException = true
+				break
+			}
+		}
 		return []Decl{&CallbackFuncDecl{
-			typeName:   typeName + "Func",
-			params:     params,
-			returnType: retType,
+			typeName:        typeName + "Func",
+			params:          params,
+			returnType:      retType,
+			raisesException: raisesException,
 		}}
 	default:
 		methods := buildOpsAsMethods(ops, tm, diag, idlName)

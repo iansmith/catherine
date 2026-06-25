@@ -8,9 +8,8 @@ import (
 // nsMethod is one method on a namespace (from an operation or attribute).
 type nsMethod struct {
 	goName     string
-	params     []ifaceParam // reuse ifaceParam from iface.go (same package)
-	returnType string       // "" for void
-	isGetter   bool         // true when emitting an attribute getter (readonly attribute)
+	params     []ifaceParam
+	returnType string // "" for void
 }
 
 // NamespaceDecl is a Decl that emits a Go singleton struct from a WebIDL namespace.
@@ -30,7 +29,6 @@ func NewNamespaceDecl(idlName string, methods []nsMethod, diag *Diagnostics) *Na
 		diag.Add("error", fmt.Sprintf("namespace name %q has no letter or digit content", idlName))
 	}
 	typeName := IdentSanitize(idlName)
-	// implName is the unexported version: lowercaseFirst + "Type"
 	implName := strings.ToLower(typeName[:1]) + typeName[1:] + "Type"
 	return &NamespaceDecl{
 		typeName: typeName,
@@ -46,19 +44,16 @@ func (n *NamespaceDecl) declName() string { return n.typeName }
 func (n *NamespaceDecl) declSource() string {
 	var sb strings.Builder
 
-	// Unexported struct type
 	sb.WriteString("type ")
 	sb.WriteString(n.implName)
 	sb.WriteString(" struct{}\n\n")
 
-	// Exported singleton var
 	sb.WriteString("var ")
 	sb.WriteString(n.typeName)
 	sb.WriteString(" = &")
 	sb.WriteString(n.implName)
 	sb.WriteString("{}\n")
 
-	// Receiver abbreviation: first letter of implName, lowercased
 	recv := strings.ToLower(n.implName[:1])
 
 	for _, m := range n.methods {
@@ -69,26 +64,14 @@ func (n *NamespaceDecl) declSource() string {
 		sb.WriteString(") ")
 		sb.WriteString(m.goName)
 		sb.WriteString("(")
-		for i, p := range m.params {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString(p.goName)
-			sb.WriteString(" ")
-			if p.variadic {
-				sb.WriteString("...")
-			}
-			sb.WriteString(p.goType)
-		}
+		writeParams(&sb, m.params)
 		sb.WriteString(")")
 		if m.returnType != "" {
 			sb.WriteString(" ")
 			sb.WriteString(m.returnType)
-		}
-		if m.returnType == "" {
-			sb.WriteString(" {}\n")
-		} else {
 			sb.WriteString(" { panic(\"not implemented\") }\n")
+		} else {
+			sb.WriteString(" {}\n")
 		}
 	}
 

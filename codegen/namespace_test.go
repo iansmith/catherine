@@ -50,7 +50,7 @@ func TestNewNamespaceDecl(t *testing.T) {
 			name:    "getter readonly attribute",
 			idlName: "Console",
 			methods: []nsMethod{
-				{goName: "ErrorCount", params: nil, returnType: "int32", isGetter: true},
+				{goName: "ErrorCount", params: nil, returnType: "int32"},
 			},
 			wantSource: "type consoleType struct{}\n\n" +
 				"var Console = &consoleType{}\n" +
@@ -63,7 +63,7 @@ func TestNewNamespaceDecl(t *testing.T) {
 			idlName: "Console",
 			methods: []nsMethod{
 				{goName: "Log", params: []ifaceParam{{goName: "msg", goType: "string"}}, returnType: ""},
-				{goName: "ErrorCount", params: nil, returnType: "int32", isGetter: true},
+				{goName: "ErrorCount", params: nil, returnType: "int32"},
 			},
 			wantSource: "type consoleType struct{}\n\n" +
 				"var Console = &consoleType{}\n" +
