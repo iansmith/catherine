@@ -1,0 +1,804 @@
+package codegen
+
+import (
+	"fmt"
+	"strings"
+	"unicode"
+
+	"github.com/iansmith/webidl/typemap"
+	"github.com/iansmith/webidl/webidl"
+)
+
+// ---------------------------------------------------------------------------
+// Internal representation
+// ---------------------------------------------------------------------------
+
+// ifaceMethod describes one method in a Go interface.
+type ifaceMethod struct {
+	goName     string
+	params     []ifaceParam
+	returnType string // "" for void
+}
+
+// ifaceParam is one parameter in a method or function signature.
+type ifaceParam struct {
+	goName   string
+	goType   string
+	variadic bool
+}
+
+// ---------------------------------------------------------------------------
+// InterfaceDecl
+// ---------------------------------------------------------------------------
+
+// InterfaceDecl is a Decl that emits a Go interface type from a WebIDL interface.
+type InterfaceDecl struct {
+	typeName   string
+	parentName string // "" means no parent embedding
+	methods    []ifaceMethod
+}
+
+func (d *InterfaceDecl) declName() string { return d.typeName }
+
+// declSource emits:
+//
+//	type Foo interface {
+//	    ParentName        // only when parentName != ""
+//	    Method(Param T) R
+//	}
+func (d *InterfaceDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("type ")
+	sb.WriteString(d.typeName)
+	sb.WriteString(" interface {\n")
+	if d.parentName != "" {
+		sb.WriteString("\t")
+		sb.WriteString(d.parentName)
+		sb.WriteString("\n")
+	}
+	for _, m := range d.methods {
+		sb.WriteString("\t")
+		sb.WriteString(m.goName)
+		sb.WriteString("(")
+		writeParams(&sb, m.params)
+		sb.WriteString(")")
+		if m.returnType != "" {
+			sb.WriteString(" ")
+			sb.WriteString(m.returnType)
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// ConstBlockDecl
+// ---------------------------------------------------------------------------
+
+type constEntry struct {
+	goName string
+	goType string
+	value  string // Go literal
+}
+
+// ConstBlockDecl is a Decl that emits a package-level const block for constants
+// that belong to a specific WebIDL interface.
+type ConstBlockDecl struct {
+	typeName  string // interface name — used as declName prefix for uniqueness
+	constants []constEntry
+}
+
+func (d *ConstBlockDecl) declName() string { return d.typeName + "Consts" }
+
+// declSource emits:
+//
+//	const (
+//	    InterfaceNameConst GoType = value
+//	)
+func (d *ConstBlockDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("const (\n")
+	for _, c := range d.constants {
+		sb.WriteString("\t")
+		sb.WriteString(c.goName)
+		sb.WriteString(" ")
+		sb.WriteString(c.goType)
+		sb.WriteString(" = ")
+		sb.WriteString(c.value)
+		sb.WriteString("\n")
+	}
+	sb.WriteString(")\n")
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// ConstructorDecl
+// ---------------------------------------------------------------------------
+
+// ConstructorDecl is a Decl that emits a factory function stub for a WebIDL
+// interface constructor.
+type ConstructorDecl struct {
+	funcName  string // e.g. "NewEventTarget"
+	ifaceName string // the return type (the Go interface name)
+	params    []ifaceParam
+}
+
+func (d *ConstructorDecl) declName() string { return d.funcName }
+
+// declSource emits:
+//
+//	func NewFoo(Param T) Foo {
+//	    panic("NewFoo: not implemented")
+//	}
+func (d *ConstructorDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("func ")
+	sb.WriteString(d.funcName)
+	sb.WriteString("(")
+	writeParams(&sb, d.params)
+	sb.WriteString(") ")
+	sb.WriteString(d.ifaceName)
+	sb.WriteString(" {\n\tpanic(\"")
+	sb.WriteString(d.funcName)
+	sb.WriteString(": not implemented\")\n}\n")
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// StaticFuncDecl
+// ---------------------------------------------------------------------------
+
+// StaticFuncDecl is a Decl that emits a package-level function stub for a
+// WebIDL static operation or static attribute accessor.
+type StaticFuncDecl struct {
+	funcName   string
+	params     []ifaceParam
+	returnType string // "" for void
+}
+
+func (d *StaticFuncDecl) declName() string { return d.funcName }
+
+// declSource emits:
+//
+//	func FooBar(Param T) R {
+//	    panic("FooBar: not implemented")
+//	}
+func (d *StaticFuncDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("func ")
+	sb.WriteString(d.funcName)
+	sb.WriteString("(")
+	writeParams(&sb, d.params)
+	sb.WriteString(")")
+	if d.returnType != "" {
+		sb.WriteString(" ")
+		sb.WriteString(d.returnType)
+	}
+	sb.WriteString(" {\n\tpanic(\"")
+	sb.WriteString(d.funcName)
+	sb.WriteString(": not implemented\")\n}\n")
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// CallbackFuncDecl
+// ---------------------------------------------------------------------------
+
+// CallbackFuncDecl is a Decl that emits `type FooFunc func(...)` for a
+// single-method callback interface.
+type CallbackFuncDecl struct {
+	typeName   string
+	params     []ifaceParam
+	returnType string
+}
+
+func (d *CallbackFuncDecl) declName() string { return d.typeName }
+
+// declSource emits:
+//
+//	type FooFunc func(T1, T2) R
+func (d *CallbackFuncDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("type ")
+	sb.WriteString(d.typeName)
+	sb.WriteString(" func(")
+	// func type literals use type-only params (names not required and would be
+	// non-idiomatic in a type alias context)
+	for i, p := range d.params {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		if p.variadic {
+			sb.WriteString("...")
+		}
+		sb.WriteString(p.goType)
+	}
+	sb.WriteString(")")
+	if d.returnType != "" {
+		sb.WriteString(" ")
+		sb.WriteString(d.returnType)
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// EntryTypeDecl
+// ---------------------------------------------------------------------------
+
+// EntryTypeDecl is a Decl that emits the generic Entry[K, V any] struct used
+// as the element type of async_iterable<K, V> pair iterators. Add it to a
+// File at most once — File.Render rejects duplicate declNames.
+type EntryTypeDecl struct{}
+
+func (d *EntryTypeDecl) declName() string { return "Entry" }
+
+// declSource emits:
+//
+//	type Entry[K, V any] struct { Key K; Value V }
+func (d *EntryTypeDecl) declSource() string {
+	return "type Entry[K, V any] struct {\n\tKey   K\n\tValue V\n}\n"
+}
+
+// ---------------------------------------------------------------------------
+// NewInterfaceDecls — entry point
+// ---------------------------------------------------------------------------
+
+// NewInterfaceDecls produces all Decl values needed for a single WebIDL
+// interface definition. The returned order is always:
+//  1. InterfaceDecl (or CallbackFuncDecl for single-method callbacks)
+//  2. ConstBlockDecl (only when the interface has constants)
+//  3. ConstructorDecl (only when the interface has a constructor)
+//  4. StaticFuncDecl values (one per static operation or attribute accessor)
+//  5. EntryTypeDecl (only when a pair async_iterable is present)
+//
+// Returns nil for IfaceMixin (already merged by IR; transparent to codegen).
+// Returns nil for zero-method callback interfaces (error added to diag).
+// diag must not be nil.
+func NewInterfaceDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []Decl {
+	if diag == nil {
+		diag = NewDiagnostics()
+	}
+	if def == nil {
+		return nil
+	}
+	iface, ok := def.Primary.(*webidl.Interface)
+	if !ok {
+		return nil
+	}
+	switch iface.Variant {
+	case webidl.IfaceMixin:
+		return nil
+	case webidl.IfaceCallback:
+		return buildCallbackDecls(iface.Name, def.Members, tm, diag)
+	default:
+		return buildRegularDecls(iface, def, tm, diag)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Callback path
+// ---------------------------------------------------------------------------
+
+func buildCallbackDecls(idlName string, members []webidl.Member, tm typemap.Mapper, diag *Diagnostics) []Decl {
+	typeName := IdentSanitize(idlName)
+
+	var ops []*webidl.Operation
+	for _, m := range members {
+		if op, ok := m.(*webidl.Operation); ok {
+			ops = append(ops, op)
+		}
+	}
+
+	switch len(ops) {
+	case 0:
+		diag.Add("error", fmt.Sprintf("callback interface %q has no operations; skipping", idlName))
+		return nil
+	case 1:
+		op := ops[0]
+		params := buildParams(op.Arguments, tm, diag, idlName)
+		retType := buildReturnType(op.ReturnType, tm, diag, idlName, op.Name)
+		return []Decl{&CallbackFuncDecl{
+			typeName:   typeName + "Func",
+			params:     params,
+			returnType: retType,
+		}}
+	default:
+		methods := buildOpsAsMethods(ops, tm, diag, idlName)
+		return []Decl{&InterfaceDecl{typeName: typeName, methods: methods}}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regular interface path
+// ---------------------------------------------------------------------------
+
+func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []Decl {
+	idlName := iface.Name
+	typeName := IdentSanitize(idlName)
+
+	if !hasAlnum(idlName) {
+		diag.Add("error", fmt.Sprintf("interface name %q has no letter or digit content; cannot produce a valid Go type name", idlName))
+		return nil
+	}
+
+	idecl := &InterfaceDecl{typeName: typeName}
+	if iface.Inheritance != "" {
+		idecl.parentName = IdentSanitize(iface.Inheritance)
+	}
+
+	seenMethods := make(map[string]bool)
+	var needsEntry bool
+
+	for _, mem := range def.Members {
+		switch m := mem.(type) {
+		case *webidl.Attribute:
+			if m.Special == "static" {
+				continue
+			}
+			addAttrMethods(idecl, m, tm, diag, idlName, seenMethods)
+		case *webidl.Operation:
+			if m.Special == "static" {
+				continue
+			}
+			addOpMethod(idecl, m, tm, diag, idlName, seenMethods)
+		case *webidl.IterableLike:
+			if m.Kind == webidl.IterAsyncIterable && len(m.Types) >= 2 {
+				needsEntry = true
+			}
+			addIterMethods(idecl, m, tm, diag, idlName)
+		}
+	}
+
+	var decls []Decl
+	decls = append(decls, idecl)
+
+	if cb := buildConstBlock(typeName, def.Members, tm, diag, idlName); cb != nil {
+		decls = append(decls, cb)
+	}
+	if cd := buildConstructorDecl(typeName, def.Members, tm, diag, idlName); cd != nil {
+		decls = append(decls, cd)
+	}
+	decls = append(decls, buildStaticDecls(typeName, def.Members, tm, diag, idlName)...)
+	if needsEntry {
+		decls = append(decls, &EntryTypeDecl{})
+	}
+	return decls
+}
+
+// ---------------------------------------------------------------------------
+// Attribute methods
+// ---------------------------------------------------------------------------
+
+func addAttrMethods(idecl *InterfaceDecl, attr *webidl.Attribute, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
+	goBaseName := IdentSanitize(attr.Name)
+	if runes := []rune(goBaseName); len(runes) == 0 || !unicode.IsLetter(runes[0]) {
+		diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier %q; skipping", idlName, attr.Name, goBaseName))
+		return
+	}
+	getterName := goBaseName + "Attr"
+	gt, err := tm.MapType(attr.IDLType)
+	if err != nil {
+		diag.Add("error", fmt.Sprintf("interface %q: cannot map type for attribute %q: %v", idlName, attr.Name, err))
+		return
+	}
+	if gt.Unresolved {
+		diag.Add("warning", fmt.Sprintf("interface %q: attribute %q maps to unresolved type %q", idlName, attr.Name, gt.String()))
+	}
+	typeStr := gt.String()
+
+	if seen[getterName] {
+		diag.Add("error", fmt.Sprintf("interface %q: attribute getter %q dropped — collision (first wins)", idlName, attr.Name))
+		return
+	}
+	seen[getterName] = true
+	idecl.methods = append(idecl.methods, ifaceMethod{goName: getterName, returnType: typeStr})
+
+	// Stringifier attribute also provides String() string
+	if attr.Special == "stringifier" && !seen["String"] {
+		seen["String"] = true
+		idecl.methods = append(idecl.methods, ifaceMethod{goName: "String", returnType: "string"})
+	}
+
+	if attr.Readonly {
+		return
+	}
+	setterName := "Set" + goBaseName + "Attr"
+	if seen[setterName] {
+		diag.Add("error", fmt.Sprintf("interface %q: attribute setter %q dropped — collision (first wins)", idlName, attr.Name))
+		return
+	}
+	seen[setterName] = true
+	idecl.methods = append(idecl.methods, ifaceMethod{
+		goName: setterName,
+		params: []ifaceParam{{goName: "V", goType: typeStr}},
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Operation methods
+// ---------------------------------------------------------------------------
+
+func addOpMethod(idecl *InterfaceDecl, op *webidl.Operation, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
+	// Stringifier: named or unnamed, with or without return type
+	if op.Special == "stringifier" {
+		if !seen["String"] {
+			seen["String"] = true
+			idecl.methods = append(idecl.methods, ifaceMethod{goName: "String", returnType: "string"})
+		}
+		return
+	}
+
+	// Special indexed operations
+	switch op.Special {
+	case "getter":
+		retType := buildReturnType(op.ReturnType, tm, diag, idlName, "getter")
+		addSpecialMethod(idecl, "Index", []ifaceParam{{goName: "I", goType: "uint32"}}, retType, seen, diag, idlName)
+		return
+	case "setter":
+		valType := "any"
+		if len(op.Arguments) >= 2 {
+			gt, err := tm.MapType(op.Arguments[1].IDLType)
+			if err == nil {
+				valType = gt.String()
+			}
+		}
+		addSpecialMethod(idecl, "SetIndex", []ifaceParam{{goName: "I", goType: "uint32"}, {goName: "V", goType: valType}}, "", seen, diag, idlName)
+		return
+	case "deleter":
+		addSpecialMethod(idecl, "Delete", []ifaceParam{{goName: "I", goType: "uint32"}}, "", seen, diag, idlName)
+		return
+	}
+
+	// Regular named operation
+	if op.Name == "" {
+		return // anonymous with no known special — skip
+	}
+	goName := IdentSanitize(op.Name)
+	if runes := []rune(goName); len(runes) == 0 || !unicode.IsLetter(runes[0]) {
+		diag.Add("error", fmt.Sprintf("interface %q: operation %q sanitizes to invalid Go identifier %q; skipping", idlName, op.Name, goName))
+		return
+	}
+	if seen[goName] {
+		diag.Add("error", fmt.Sprintf("interface %q: operation %q dropped — name collision (first wins)", idlName, op.Name))
+		return
+	}
+	seen[goName] = true
+	params := buildParams(op.Arguments, tm, diag, idlName)
+	retType := buildReturnType(op.ReturnType, tm, diag, idlName, op.Name)
+	idecl.methods = append(idecl.methods, ifaceMethod{goName: goName, params: params, returnType: retType})
+}
+
+func addSpecialMethod(idecl *InterfaceDecl, goName string, params []ifaceParam, retType string, seen map[string]bool, diag *Diagnostics, idlName string) {
+	if seen[goName] {
+		diag.Add("error", fmt.Sprintf("interface %q: special operation %q already defined — duplicate skipped", idlName, goName))
+		return
+	}
+	seen[goName] = true
+	idecl.methods = append(idecl.methods, ifaceMethod{goName: goName, params: params, returnType: retType})
+}
+
+// ---------------------------------------------------------------------------
+// IterableLike methods
+// ---------------------------------------------------------------------------
+
+func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Mapper, diag *Diagnostics, idlName string) {
+	var typeStrs []string
+	for _, t := range it.Types {
+		gt, err := tm.MapType(t)
+		if err != nil {
+			diag.Add("error", fmt.Sprintf("interface %q: cannot map iterable type: %v", idlName, err))
+			typeStrs = append(typeStrs, "any")
+			continue
+		}
+		typeStrs = append(typeStrs, gt.String())
+	}
+
+	switch it.Kind {
+	case webidl.IterIterable:
+		valType := "any"
+		keyType := "uint32"
+		if len(typeStrs) == 1 {
+			valType = typeStrs[0]
+		} else if len(typeStrs) >= 2 {
+			keyType = typeStrs[0]
+			valType = typeStrs[1]
+		}
+		idecl.methods = append(idecl.methods,
+			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
+			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"},
+			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"},
+			ifaceMethod{goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}},
+		)
+
+	case webidl.IterAsyncIterable:
+		// value-only async iterable: Types has 1 entry
+		// pair async iterable: Types has 2 entries (key, value)
+		valType := "any"
+		if len(typeStrs) >= 1 {
+			valType = typeStrs[len(typeStrs)-1]
+		}
+		idecl.methods = append(idecl.methods,
+			ifaceMethod{
+				goName:     "AsyncValues",
+				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+				returnType: "iter.Seq2[" + valType + ", error]",
+			},
+		)
+		if len(typeStrs) >= 2 {
+			keyType := typeStrs[0]
+			idecl.methods = append(idecl.methods,
+				ifaceMethod{
+					goName:     "AsyncKeys",
+					params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+					returnType: "iter.Seq2[" + keyType + ", error]",
+				},
+				ifaceMethod{
+					goName:     "AsyncEntries",
+					params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+					returnType: "iter.Seq2[Entry[" + keyType + ", " + valType + "], error]",
+				},
+			)
+		}
+
+	case webidl.IterMaplike:
+		if len(typeStrs) < 2 {
+			diag.Add("error", fmt.Sprintf("interface %q: maplike requires 2 type arguments, got %d", idlName, len(typeStrs)))
+			return
+		}
+		keyType, valType := typeStrs[0], typeStrs[1]
+		idecl.methods = append(idecl.methods,
+			ifaceMethod{goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType},
+			ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool"},
+			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"},
+			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
+			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"},
+			ifaceMethod{goName: "Size", returnType: "int"},
+		)
+		if !it.Readonly {
+			idecl.methods = append(idecl.methods,
+				ifaceMethod{goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}},
+				ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}},
+				ifaceMethod{goName: "Clear"},
+			)
+		}
+
+	case webidl.IterSetlike:
+		valType := "any"
+		if len(typeStrs) >= 1 {
+			valType = typeStrs[0]
+		}
+		idecl.methods = append(idecl.methods,
+			ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool"},
+			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + valType + "]"},
+			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
+			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + valType + ", " + valType + "]"},
+			ifaceMethod{goName: "Size", returnType: "int"},
+		)
+		if !it.Readonly {
+			idecl.methods = append(idecl.methods,
+				ifaceMethod{goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}},
+				ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}},
+				ifaceMethod{goName: "Clear"},
+			)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Const, constructor, and static helpers
+// ---------------------------------------------------------------------------
+
+func buildConstBlock(typeName string, members []webidl.Member, tm typemap.Mapper, diag *Diagnostics, idlName string) *ConstBlockDecl {
+	seen := make(map[string]bool)
+	var entries []constEntry
+	for _, mem := range members {
+		c, ok := mem.(*webidl.Constant)
+		if !ok {
+			continue
+		}
+		goName := typeName + IdentSanitize(c.Name)
+		if seen[goName] {
+			diag.Add("error", fmt.Sprintf("interface %q: constant %q dropped — collision (first wins)", idlName, c.Name))
+			continue
+		}
+		seen[goName] = true
+		gt, err := tm.MapType(c.IDLType)
+		if err != nil {
+			diag.Add("error", fmt.Sprintf("interface %q: cannot map type for const %q: %v", idlName, c.Name, err))
+			continue
+		}
+		entries = append(entries, constEntry{
+			goName: goName,
+			goType: gt.String(),
+			value:  constValueLit(c.Value),
+		})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return &ConstBlockDecl{typeName: typeName, constants: entries}
+}
+
+func buildConstructorDecl(typeName string, members []webidl.Member, tm typemap.Mapper, diag *Diagnostics, idlName string) *ConstructorDecl {
+	var first *webidl.Constructor
+	var overloads int
+	for _, mem := range members {
+		c, ok := mem.(*webidl.Constructor)
+		if !ok {
+			continue
+		}
+		if first == nil {
+			first = c
+		} else {
+			overloads++
+		}
+	}
+	if first == nil {
+		return nil
+	}
+	if overloads > 0 {
+		diag.Add("error", fmt.Sprintf("interface %q: %d constructor overload(s) dropped (first wins)", idlName, overloads))
+	}
+	params := buildParams(first.Arguments, tm, diag, idlName)
+	return &ConstructorDecl{
+		funcName:  "New" + typeName,
+		ifaceName: typeName,
+		params:    params,
+	}
+}
+
+func buildStaticDecls(typeName string, members []webidl.Member, tm typemap.Mapper, diag *Diagnostics, idlName string) []Decl {
+	seen := make(map[string]bool)
+	var decls []Decl
+	for _, mem := range members {
+		switch m := mem.(type) {
+		case *webidl.Operation:
+			if m.Special != "static" || m.Name == "" {
+				continue
+			}
+			funcName := typeName + IdentSanitize(m.Name)
+			if seen[funcName] {
+				diag.Add("error", fmt.Sprintf("interface %q: static operation %q dropped — collision (first wins)", idlName, m.Name))
+				continue
+			}
+			seen[funcName] = true
+			params := buildParams(m.Arguments, tm, diag, idlName)
+			retType := buildReturnType(m.ReturnType, tm, diag, idlName, m.Name)
+			decls = append(decls, &StaticFuncDecl{funcName: funcName, params: params, returnType: retType})
+
+		case *webidl.Attribute:
+			if m.Special != "static" {
+				continue
+			}
+			gt, err := tm.MapType(m.IDLType)
+			typeStr := "any"
+			if err != nil {
+				diag.Add("error", fmt.Sprintf("interface %q: cannot map type for static attribute %q: %v", idlName, m.Name, err))
+			} else {
+				typeStr = gt.String()
+			}
+			getterName := typeName + "Get" + IdentSanitize(m.Name)
+			if !seen[getterName] {
+				seen[getterName] = true
+				decls = append(decls, &StaticFuncDecl{funcName: getterName, returnType: typeStr})
+			}
+			if m.Readonly {
+				continue
+			}
+			setterName := typeName + "Set" + IdentSanitize(m.Name)
+			if !seen[setterName] {
+				seen[setterName] = true
+				decls = append(decls, &StaticFuncDecl{
+					funcName: setterName,
+					params:   []ifaceParam{{goName: "V", goType: typeStr}},
+				})
+			}
+		}
+	}
+	return decls
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+// buildOpsAsMethods converts a slice of *webidl.Operation to []ifaceMethod.
+// Used for multi-method callback interfaces.
+func buildOpsAsMethods(ops []*webidl.Operation, tm typemap.Mapper, diag *Diagnostics, idlName string) []ifaceMethod {
+	seen := make(map[string]bool)
+	idecl := &InterfaceDecl{}
+	for _, op := range ops {
+		addOpMethod(idecl, op, tm, diag, idlName, seen)
+	}
+	return idecl.methods
+}
+
+// buildParams converts a slice of *webidl.Argument to []ifaceParam.
+func buildParams(args []*webidl.Argument, tm typemap.Mapper, diag *Diagnostics, idlName string) []ifaceParam {
+	var params []ifaceParam
+	for _, arg := range args {
+		argGoName := IdentSanitize(arg.Name)
+		if argGoName == "" {
+			argGoName = "Arg"
+		}
+		gt, err := tm.MapType(arg.IDLType)
+		typeStr := "any"
+		if err != nil {
+			diag.Add("error", fmt.Sprintf("interface %q: cannot map argument type for %q: %v", idlName, arg.Name, err))
+		} else {
+			typeStr = gt.String()
+		}
+		params = append(params, ifaceParam{goName: argGoName, goType: typeStr, variadic: arg.Variadic})
+	}
+	return params
+}
+
+// buildReturnType maps an IDLType to a Go return-type string. Returns "" for
+// nil receivers (anonymous stringifier body-less form) and for undefined/void.
+func buildReturnType(t *webidl.IDLType, tm typemap.Mapper, diag *Diagnostics, idlName, opName string) string {
+	if t == nil {
+		return ""
+	}
+	if t.Base == "undefined" || t.Base == "void" {
+		return ""
+	}
+	gt, err := tm.MapType(t)
+	if err != nil {
+		diag.Add("error", fmt.Sprintf("interface %q: cannot map return type for op %q: %v", idlName, opName, err))
+		return "any"
+	}
+	return gt.String()
+}
+
+// constValueLit renders a *webidl.ConstValue as a Go literal string.
+func constValueLit(cv *webidl.ConstValue) string {
+	if cv == nil {
+		return "0"
+	}
+	switch cv.Kind {
+	case webidl.CVNumber:
+		return cv.Number
+	case webidl.CVBoolean:
+		if cv.Bool {
+			return "true"
+		}
+		return "false"
+	case webidl.CVNull:
+		return "nil"
+	case webidl.CVInfinity:
+		if cv.Negative {
+			return "math.Inf(-1)"
+		}
+		return "math.Inf(1)"
+	case webidl.CVNaN:
+		return "math.NaN()"
+	default:
+		return "0"
+	}
+}
+
+// writeParams writes a comma-separated parameter list into sb.
+func writeParams(sb *strings.Builder, params []ifaceParam) {
+	for i, p := range params {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(p.goName)
+		sb.WriteString(" ")
+		if p.variadic {
+			sb.WriteString("...")
+		}
+		sb.WriteString(p.goType)
+	}
+}
+
+// hasAlnum reports whether s contains at least one letter or digit. A name
+// without one sanitizes to the fallback identifier "X", which is valid Go but
+// almost certainly a caller bug.
+func hasAlnum(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.IsDigit(r)
+	})
+}
