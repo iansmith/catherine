@@ -1,6 +1,7 @@
 package webidl
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -105,4 +106,106 @@ func TestIR_All_countMatchesLen(t *testing.T) {
 	if got, want := len(ir.All()), ir.Len(); got != want {
 		t.Errorf("len(All()) = %d, Len() = %d: must match", got, want)
 	}
+}
+
+// --- Adversary gap tests ---
+
+// Mixin definitions are present in IR.defs (by design) so callers can resolve
+// folded members. All() must return them so Generate() can filter them.
+func TestIR_All_mixinPresentForFilteringByCallers(t *testing.T) {
+	t.Parallel()
+	// A mixin definition is not removed from the IR — callers like Generate()
+	// are expected to filter by Primary.(*Interface).Variant != IfaceMixin.
+	defs, err := Parse(`
+		interface mixin Mixable {
+			undefined doSomething();
+		};
+		interface MyInterface {};
+		MyInterface includes Mixable;
+	`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ir, errs := Merge(defs)
+	if len(errs) > 0 {
+		t.Fatalf("Merge: %v", errs)
+	}
+	all := ir.All()
+	// IR holds both MyInterface and Mixable (the latter stays for member-folding).
+	if len(all) < 1 {
+		t.Fatalf("All(): expected at least 1 def, got 0")
+	}
+	var hasMixin bool
+	for _, d := range all {
+		iface, ok := d.Primary.(*Interface)
+		if ok && iface.Variant == IfaceMixin {
+			hasMixin = true
+		}
+	}
+	if !hasMixin {
+		t.Error("All(): mixin entry not present; Generate() won't have a chance to filter it")
+	}
+}
+
+// All() must work with non-enum definition kinds.
+func TestIR_All_dictionaryType(t *testing.T) {
+	t.Parallel()
+	defs, err := Parse(`dictionary Point { required long x; required long y; };`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ir, errs := Merge(defs)
+	if len(errs) > 0 {
+		t.Fatalf("Merge: %v", errs)
+	}
+	all := ir.All()
+	if len(all) != 1 {
+		t.Fatalf("All(): want 1 def, got %d", len(all))
+	}
+	if _, ok := all[0].Primary.(*Dictionary); !ok {
+		t.Errorf("Primary is %T, want *Dictionary", all[0].Primary)
+	}
+}
+
+// All() returns defs in deterministic (sorted) order — same answer on every call.
+func TestIR_All_deterministicOrder(t *testing.T) {
+	t.Parallel()
+	defs, err := Parse(`
+		enum Zebra { "z" };
+		enum Apple { "a" };
+		enum Mango { "m" };
+	`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ir, errs := Merge(defs)
+	if len(errs) > 0 {
+		t.Fatalf("Merge: %v", errs)
+	}
+	first := namesFrom(ir.All())
+	second := namesFrom(ir.All())
+	if strings.Join(first, ",") != strings.Join(second, ",") {
+		t.Errorf("All() is non-deterministic:\n  call 1: %v\n  call 2: %v", first, second)
+	}
+}
+
+func namesFrom(defs []*MergedDef) []string {
+	out := make([]string, 0, len(defs))
+	for _, d := range defs {
+		switch p := d.Primary.(type) {
+		case *Enum:
+			out = append(out, p.Name)
+		case *Dictionary:
+			out = append(out, p.Name)
+		case *Interface:
+			out = append(out, p.Name)
+		case *Typedef:
+			out = append(out, p.Name)
+		case *Namespace:
+			out = append(out, p.Name)
+		case *CallbackFunction:
+			out = append(out, p.Name)
+		}
+	}
+	return out
 }
