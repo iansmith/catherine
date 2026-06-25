@@ -339,6 +339,12 @@ func runCodegen(args []string) {
 		os.Exit(2)
 	}
 
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "codegen: at least one .idl file is required")
+		fs.Usage()
+		os.Exit(2)
+	}
+
 	var allDefs []webidl.Definition
 	for _, path := range fs.Args() {
 		src, err := os.ReadFile(path)

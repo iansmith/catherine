@@ -37,8 +37,10 @@ func Generate(ir *webidl.IR, opts Options) error {
 	if opts.PackageName == "" {
 		return errors.New("codegen.Generate: Options.PackageName is required")
 	}
-	if _, err := os.Stat(opts.OutputDir); err != nil {
+	if fi, err := os.Stat(opts.OutputDir); err != nil {
 		return fmt.Errorf("codegen.Generate: OutputDir %q: %w", opts.OutputDir, err)
+	} else if !fi.IsDir() {
+		return fmt.Errorf("codegen.Generate: OutputDir %q: not a directory", opts.OutputDir)
 	}
 
 	tm := typemap.Mapper{}
@@ -55,6 +57,9 @@ func Generate(ir *webidl.IR, opts Options) error {
 
 	if !diag.IsClean() {
 		return fmt.Errorf("codegen.Generate: type-mapping errors:\n%s", diag.Format())
+	}
+	if ws := diag.Format(); ws != "" {
+		fmt.Fprintf(os.Stderr, "codegen: warnings:\n%s", ws)
 	}
 
 	src, err := f.Render()
@@ -92,8 +97,6 @@ func dispatchDef(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []
 		return dispatchCallback(p, def, tm, diag)
 	case *webidl.Namespace:
 		return []Decl{NewNamespaceDecl(p.Name, buildNsMethods(def.Members, tm, diag, p.Name), diag)}
-	case *webidl.Includes:
-		return nil
 	default:
 		diag.Add("warning", fmt.Sprintf("unhandled definition kind %T — skipped", def.Primary))
 		return nil
@@ -123,7 +126,7 @@ func dispatchDict(p *webidl.Dictionary, def *webidl.MergedDef, tm typemap.Mapper
 
 func dispatchCallback(p *webidl.CallbackFunction, def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []Decl {
 	raisesException := false
-	for _, attr := range def.ExtAttrs {
+	for _, attr := range p.ExtAttrs {
 		if attr.Name == "RaisesException" {
 			raisesException = true
 			break

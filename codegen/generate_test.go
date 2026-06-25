@@ -106,6 +106,25 @@ func TestGenerate_invalidOutputDir(t *testing.T) {
 	}
 }
 
+func TestGenerate_outputDirIsFile(t *testing.T) {
+	t.Parallel()
+	ir, _ := webidl.Merge(nil)
+	f, err := os.CreateTemp("", "cath42-not-a-dir-*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	err = codegen.Generate(ir, codegen.Options{
+		OutputDir:   f.Name(),
+		PackageName: "testpkg",
+	})
+	if err == nil {
+		t.Error("Generate with OutputDir pointing to a regular file should return an error")
+	}
+}
+
 // --- Cross-feature interaction ---
 
 func TestGenerate_enumAndDict(t *testing.T) {
