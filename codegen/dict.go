@@ -54,8 +54,12 @@ func NewDictDecl(idlName string, parentGoName string, fields []DictField, diag *
 			continue
 		}
 		goName := IdentSanitize(f.IDLName)
+		if runes := []rune(goName); !unicode.IsLetter(runes[0]) {
+			diag.Add("error", fmt.Sprintf("dict %q: field IDL name %q sanitizes to invalid Go identifier %q", idlName, f.IDLName, goName))
+			continue
+		}
 		if seen[goName] {
-			diag.Add("error", fmt.Sprintf("dict %q: field name collision for %q (maps to %s; first wins)", idlName, f.IDLName, goName))
+			diag.Add("error", fmt.Sprintf("dict %q: field %q dropped — collides with a prior field (both sanitize to %s)", idlName, f.IDLName, goName))
 			continue
 		}
 		seen[goName] = true
@@ -97,18 +101,19 @@ func (d *DictDecl) declSource() string {
 	}
 
 	for _, f := range d.fields {
+		typeStr := f.goType
+		tagSuffix := ""
+		if f.optional {
+			typeStr = "*" + f.goType
+			tagSuffix = ",omitempty"
+		}
 		sb.WriteString("\t")
 		sb.WriteString(f.goName)
 		sb.WriteString(" ")
-		if f.optional {
-			sb.WriteString("*")
-		}
-		sb.WriteString(f.goType)
+		sb.WriteString(typeStr)
 		sb.WriteString(" `json:\"")
 		sb.WriteString(f.idlName)
-		if f.optional {
-			sb.WriteString(",omitempty")
-		}
+		sb.WriteString(tagSuffix)
 		sb.WriteString("\"`\n")
 	}
 
