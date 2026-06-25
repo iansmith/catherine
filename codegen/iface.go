@@ -347,7 +347,7 @@ func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typema
 			if m.Kind == webidl.IterAsyncIterable && len(m.Types) >= 2 {
 				needsEntry = true
 			}
-			addIterMethods(idecl, m, tm, diag, idlName)
+			addIterMethods(idecl, m, tm, diag, idlName, seenMethods)
 		}
 	}
 
@@ -483,7 +483,7 @@ func addSpecialMethod(idecl *InterfaceDecl, goName string, params []ifaceParam, 
 // IterableLike methods
 // ---------------------------------------------------------------------------
 
-func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Mapper, diag *Diagnostics, idlName string) {
+func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
 	var typeStrs []string
 	for _, t := range it.Types {
 		gt, err := tm.MapType(t)
@@ -493,6 +493,15 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 			continue
 		}
 		typeStrs = append(typeStrs, gt.String())
+	}
+
+	add := func(m ifaceMethod) {
+		if seen[m.goName] {
+			diag.Add("warning", fmt.Sprintf("interface %q: iterable method %q conflicts with existing member — skipped", idlName, m.goName))
+			return
+		}
+		seen[m.goName] = true
+		idecl.methods = append(idecl.methods, m)
 	}
 
 	switch it.Kind {
@@ -505,12 +514,10 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 			keyType = typeStrs[0]
 			valType = typeStrs[1]
 		}
-		idecl.methods = append(idecl.methods,
-			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
-			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"},
-			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"},
-			ifaceMethod{goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}},
-		)
+		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
+		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"})
+		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"})
+		add(ifaceMethod{goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}})
 
 	case webidl.IterAsyncIterable:
 		// value-only async iterable: Types has 1 entry
@@ -519,27 +526,23 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 		if len(typeStrs) >= 1 {
 			valType = typeStrs[len(typeStrs)-1]
 		}
-		idecl.methods = append(idecl.methods,
-			ifaceMethod{
-				goName:     "AsyncValues",
-				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-				returnType: "iter.Seq2[" + valType + ", error]",
-			},
-		)
+		add(ifaceMethod{
+			goName:     "AsyncValues",
+			params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+			returnType: "iter.Seq2[" + valType + ", error]",
+		})
 		if len(typeStrs) >= 2 {
 			keyType := typeStrs[0]
-			idecl.methods = append(idecl.methods,
-				ifaceMethod{
-					goName:     "AsyncKeys",
-					params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-					returnType: "iter.Seq2[" + keyType + ", error]",
-				},
-				ifaceMethod{
-					goName:     "AsyncEntries",
-					params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-					returnType: "iter.Seq2[Entry[" + keyType + ", " + valType + "], error]",
-				},
-			)
+			add(ifaceMethod{
+				goName:     "AsyncKeys",
+				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+				returnType: "iter.Seq2[" + keyType + ", error]",
+			})
+			add(ifaceMethod{
+				goName:     "AsyncEntries",
+				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
+				returnType: "iter.Seq2[Entry[" + keyType + ", " + valType + "], error]",
+			})
 		}
 
 	case webidl.IterMaplike:
@@ -548,20 +551,16 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 			return
 		}
 		keyType, valType := typeStrs[0], typeStrs[1]
-		idecl.methods = append(idecl.methods,
-			ifaceMethod{goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType},
-			ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool"},
-			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"},
-			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
-			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"},
-			ifaceMethod{goName: "Size", returnType: "int"},
-		)
+		add(ifaceMethod{goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType})
+		add(ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool"})
+		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"})
+		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
+		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"})
+		add(ifaceMethod{goName: "Size", returnType: "int"})
 		if !it.Readonly {
-			idecl.methods = append(idecl.methods,
-				ifaceMethod{goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}},
-				ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}},
-				ifaceMethod{goName: "Clear"},
-			)
+			add(ifaceMethod{goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}})
+			add(ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}})
+			add(ifaceMethod{goName: "Clear"})
 		}
 
 	case webidl.IterSetlike:
@@ -569,19 +568,15 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 		if len(typeStrs) >= 1 {
 			valType = typeStrs[0]
 		}
-		idecl.methods = append(idecl.methods,
-			ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool"},
-			ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + valType + "]"},
-			ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"},
-			ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + valType + ", " + valType + "]"},
-			ifaceMethod{goName: "Size", returnType: "int"},
-		)
+		add(ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool"})
+		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + valType + "]"})
+		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
+		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + valType + ", " + valType + "]"})
+		add(ifaceMethod{goName: "Size", returnType: "int"})
 		if !it.Readonly {
-			idecl.methods = append(idecl.methods,
-				ifaceMethod{goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}},
-				ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}},
-				ifaceMethod{goName: "Clear"},
-			)
+			add(ifaceMethod{goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}})
+			add(ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}})
+			add(ifaceMethod{goName: "Clear"})
 		}
 	}
 }

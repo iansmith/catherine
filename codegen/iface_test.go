@@ -816,3 +816,66 @@ func TestNewInterfaceDecls_SourceIsValidGo(t *testing.T) {
 		}
 	}
 }
+
+func TestNewInterfaceDecls_IterableCollisionEmitsDiagnostic(t *testing.T) {
+	t.Parallel()
+	diag := codegen.NewDiagnostics()
+	// "Values" operation plus an iterable — iterable's Values method should
+	// be skipped with a warning, not silently duplicated.
+	def := regularMergedDef("Foo", "",
+		op("Values", idlType("long")),
+		&webidl.IterableLike{Kind: webidl.IterIterable, Types: []*webidl.IDLType{idlType("long")}},
+	)
+	decls := codegen.NewInterfaceDecls(def, tm, diag)
+	if len(decls) == 0 {
+		t.Fatal("expected at least one Decl")
+	}
+	// Diagnostic must contain a warning about the collision.
+	if !strings.Contains(diag.Format(), "warning") {
+		t.Errorf("expected a warning diagnostic for iterable/method collision, got:\n%s", diag.Format())
+	}
+	// The interface source must contain "Values" exactly once.
+	src := sourceOf(t, decls[0], "iter")
+	count := strings.Count(src, "Values(")
+	if count != 1 {
+		t.Errorf("expected exactly 1 Values method in interface, got %d:\n%s", count, src)
+	}
+}
+
+func TestDedupeDecls_RemovesDuplicateEntry(t *testing.T) {
+	t.Parallel()
+	diag := codegen.NewDiagnostics()
+	// Two interfaces each with a pair async_iterable both emit EntryTypeDecl.
+	def1 := regularMergedDef("AsyncA", "",
+		&webidl.IterableLike{
+			Kind:  webidl.IterAsyncIterable,
+			Async: true,
+			Types: []*webidl.IDLType{idlType("DOMString"), idlType("long")},
+		},
+	)
+	def2 := regularMergedDef("AsyncB", "",
+		&webidl.IterableLike{
+			Kind:  webidl.IterAsyncIterable,
+			Async: true,
+			Types: []*webidl.IDLType{idlType("DOMString"), idlType("long")},
+		},
+	)
+	all := append(
+		codegen.NewInterfaceDecls(def1, tm, diag),
+		codegen.NewInterfaceDecls(def2, tm, diag)...,
+	)
+	deduped := codegen.DedupeDecls(all)
+
+	// Build a single File — must not error with duplicate "Entry".
+	f := codegen.NewFile("gen")
+	imp := codegen.NewImportTracker()
+	imp.Add("iter")
+	imp.Add("context")
+	f.SetImports(imp)
+	for _, d := range deduped {
+		f.AddDecl(d)
+	}
+	if _, err := f.Render(); err != nil {
+		t.Errorf("File.Render after DedupeDecls: %v", err)
+	}
+}
