@@ -40,7 +40,7 @@ func NewDictDecl(idlName string, parentGoName string, fields []DictField, diag *
 		diag = NewDiagnostics()
 	}
 
-	if !hasAlnumContent(idlName) {
+	if !hasAlnum(idlName) {
 		diag.Add("error", fmt.Sprintf("dict name %q has no letter or digit content; cannot produce a valid Go type name", idlName))
 	}
 
@@ -49,7 +49,7 @@ func NewDictDecl(idlName string, parentGoName string, fields []DictField, diag *
 	seen := make(map[string]bool)
 	var internal []dictField
 	for _, f := range fields {
-		if !hasAlnumContent(f.IDLName) {
+		if !hasAlnum(f.IDLName) {
 			diag.Add("error", fmt.Sprintf("dict %q: field IDL name %q has no letter or digit content", idlName, f.IDLName))
 			continue
 		}
@@ -119,11 +119,4 @@ func (d *DictDecl) declSource() string {
 
 	sb.WriteString("}\n")
 	return sb.String()
-}
-
-// hasAlnumContent reports whether s contains at least one letter or digit.
-func hasAlnumContent(s string) bool {
-	return strings.ContainsFunc(s, func(r rune) bool {
-		return unicode.IsLetter(r) || unicode.IsDigit(r)
-	})
 }
