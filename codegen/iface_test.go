@@ -834,11 +834,17 @@ func TestNewInterfaceDecls_IterableCollisionEmitsDiagnostic(t *testing.T) {
 	if !strings.Contains(diag.Format(), "warning") {
 		t.Errorf("expected a warning diagnostic for iterable/method collision, got:\n%s", diag.Format())
 	}
-	// The interface source must contain "Values" exactly once.
+	// Values must appear exactly once (the explicit op, not the iterable duplicate).
+	// Keys, Entries, and ForEach must still be present — the closure skips only
+	// the colliding method, not the rest of the iterable methods.
 	src := sourceOf(t, decls[0], "iter")
-	count := strings.Count(src, "Values(")
-	if count != 1 {
+	if count := strings.Count(src, "Values("); count != 1 {
 		t.Errorf("expected exactly 1 Values method in interface, got %d:\n%s", count, src)
+	}
+	for _, method := range []string{"Keys(", "Entries(", "ForEach("} {
+		if !strings.Contains(src, method) {
+			t.Errorf("expected iterable method %s to be present after collision skip:\n%s", method, src)
+		}
 	}
 }
 
@@ -865,6 +871,21 @@ func TestDedupeDecls_RemovesDuplicateEntry(t *testing.T) {
 		codegen.NewInterfaceDecls(def2, tm, diag)...,
 	)
 	deduped := codegen.DedupeDecls(all)
+
+	// Both interface decls (AsyncA, AsyncB) must survive — only the duplicate
+	// Entry struct should be removed, not either interface.
+	var ifaceNames []string
+	for _, d := range deduped {
+		src := sourceOf(t, d, "iter", "context")
+		if strings.Contains(src, "type AsyncA interface") {
+			ifaceNames = append(ifaceNames, "AsyncA")
+		} else if strings.Contains(src, "type AsyncB interface") {
+			ifaceNames = append(ifaceNames, "AsyncB")
+		}
+	}
+	if len(ifaceNames) != 2 {
+		t.Errorf("expected both AsyncA and AsyncB interfaces after DedupeDecls, got: %v", ifaceNames)
+	}
 
 	// Build a single File — must not error with duplicate "Entry".
 	f := codegen.NewFile("gen")
