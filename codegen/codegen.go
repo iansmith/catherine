@@ -124,6 +124,23 @@ func (f *File) AddDecl(d Decl) {
 	f.decls = append(f.decls, d)
 }
 
+// DedupeDecls returns a copy of decls with duplicate declName values removed,
+// keeping the first occurrence of each name. Use this when collecting Decls
+// from multiple NewInterfaceDecls calls before building a File: singleton Decls
+// such as EntryTypeDecl may appear in more than one returned slice, and
+// File.Render rejects duplicate declNames.
+func DedupeDecls(decls []Decl) []Decl {
+	seen := make(map[string]bool, len(decls))
+	out := make([]Decl, 0, len(decls))
+	for _, d := range decls {
+		if name := d.declName(); !seen[name] {
+			seen[name] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // Render assembles the file's source and returns gofmt-canonical bytes.
 // Returns an error if the package name is empty or if gofmt rejects the
 // assembled source.

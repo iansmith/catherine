@@ -31,10 +31,7 @@ func NewEnumDecl(idlName string, idlValues []string, diag *Diagnostics) *EnumDec
 
 	// Reject names with no letter or digit content — they produce the fallback
 	// identifier "X", which is valid Go but almost certainly a caller bug.
-	hasAlnum := strings.ContainsFunc(idlName, func(r rune) bool {
-		return unicode.IsLetter(r) || unicode.IsDigit(r)
-	})
-	if !hasAlnum {
+	if !hasAlnum(idlName) {
 		diag.Add("error", fmt.Sprintf("enum name %q has no letter or digit content; cannot produce a valid Go type name", idlName))
 	}
 
