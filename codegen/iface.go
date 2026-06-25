@@ -186,18 +186,23 @@ func (d *StaticFuncDecl) declSource() string {
 // ---------------------------------------------------------------------------
 
 // CallbackFuncDecl is a Decl that emits `type FooFunc func(...)` for a
-// single-method callback interface.
+// WebIDL callback function. When raisesException is true the emitted signature
+// includes an error return (or an additional error in a tuple return).
 type CallbackFuncDecl struct {
-	typeName   string
-	params     []ifaceParam
-	returnType string
+	typeName        string
+	params          []ifaceParam
+	returnType      string // "" = void
+	raisesException bool
 }
 
 func (d *CallbackFuncDecl) declName() string { return d.typeName }
 
-// declSource emits:
+// declSource emits one of:
 //
-//	type FooFunc func(T1, T2) R
+//	type FooFunc func(T1, T2)               void, no exception
+//	type FooFunc func(T1, T2) error         void, raises exception
+//	type FooFunc func(T1, T2) R             non-void, no exception
+//	type FooFunc func(T1, T2) (R, error)    non-void, raises exception
 func (d *CallbackFuncDecl) declSource() string {
 	var sb strings.Builder
 	sb.WriteString("type ")
@@ -215,9 +220,18 @@ func (d *CallbackFuncDecl) declSource() string {
 		sb.WriteString(p.goType)
 	}
 	sb.WriteString(")")
-	if d.returnType != "" {
+	switch {
+	case d.returnType == "" && !d.raisesException:
+		// void, no error — no return clause
+	case d.returnType == "" && d.raisesException:
+		sb.WriteString(" error")
+	case d.returnType != "" && !d.raisesException:
 		sb.WriteString(" ")
 		sb.WriteString(d.returnType)
+	default: // returnType != "" && raisesException
+		sb.WriteString(" (")
+		sb.WriteString(d.returnType)
+		sb.WriteString(", error)")
 	}
 	sb.WriteString("\n")
 	return sb.String()
