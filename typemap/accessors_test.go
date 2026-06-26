@@ -128,6 +128,11 @@ func TestUnionMembersUnresolvedMemberPropagated(t *testing.T) {
 	if !got[0].Unresolved {
 		t.Errorf("UnionMembers[0] (Node) Unresolved = false, want true")
 	}
+	// An unmapped interface name resolves to `any` (not a half-mapping that keeps
+	// the IDL name as the Go type name).
+	if got[0].String() != "any" {
+		t.Errorf("UnionMembers[0] (Node) = %q, want \"any\"", got[0].String())
+	}
 	if got[1].Unresolved {
 		t.Errorf("UnionMembers[1] (DOMString) Unresolved = true, want false")
 	}
@@ -432,6 +437,225 @@ func TestCallbackInterfaceSignatureEventListener(t *testing.T) {
 	// Event is an unmapped interface name → Unresolved any.
 	if !sig.Params[0].GoType.Unresolved {
 		t.Error("event param Unresolved = false, want true (Event is an unmapped interface)")
+	}
+	if sig.Params[0].GoType.String() != "any" {
+		t.Errorf("event param GoType = %q, want \"any\"", sig.Params[0].GoType.String())
+	}
+}
+
+// ===========================================================================
+// CATH-63: adversary gap tests
+// ===========================================================================
+
+// --- UnionMembers: boundary -------------------------------------------------
+
+// A one-member union must yield exactly that one member, not be mistaken for
+// "not really a union" by a len>1 guard.
+func TestUnionMembersSingleMember(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	u := &webidl.IDLType{Union: true, Subtypes: []*webidl.IDLType{{Base: "double"}}}
+	got, err := m.UnionMembers(u)
+	if err != nil {
+		t.Fatalf("UnionMembers(single) returned error: %v", err)
+	}
+	if len(got) != 1 || got[0].String() != "float64" {
+		t.Errorf("UnionMembers(single) = %v, want [float64]", goTypeNames(got))
+	}
+}
+
+// A union with no members is malformed; the accessor must reject it rather than
+// return an empty slice a binding would silently treat as "no overloads".
+func TestUnionMembersEmptySubtypesReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	if _, err := m.UnionMembers(&webidl.IDLType{Union: true}); err == nil {
+		t.Error("UnionMembers(union with no subtypes) expected error, got nil")
+	}
+}
+
+// Flattening must be recursive to any depth, not a single pass.
+// (double or (long or (DOMString or boolean))) → [float64, int32, string, bool].
+func TestUnionMembersDoublyNestedFlattened(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	innermost := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, {Base: "boolean"}},
+	}
+	inner := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "long"}, innermost},
+	}
+	outer := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "double"}, inner},
+	}
+	got, err := m.UnionMembers(outer)
+	if err != nil {
+		t.Fatalf("UnionMembers(doubly nested) returned error: %v", err)
+	}
+	want := []string{"float64", "int32", "string", "bool"}
+	if len(got) != len(want) {
+		t.Fatalf("UnionMembers(doubly nested) = %v, want %v", goTypeNames(got), want)
+	}
+	for i, w := range want {
+		if got[i].String() != w {
+			t.Errorf("UnionMembers(doubly nested)[%d] = %q, want %q", i, got[i].String(), w)
+		}
+	}
+}
+
+// --- UnionMembers: nested error propagation ---------------------------------
+
+// A nil leaf buried inside a nested union must still be rejected — validation
+// is not a top-level-only check.
+func TestUnionMembersNestedNilMemberReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	inner := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "DOMString"}, nil},
+	}
+	outer := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "double"}, inner},
+	}
+	if _, err := m.UnionMembers(outer); err == nil {
+		t.Error("UnionMembers(nested nil member) expected error, got nil")
+	}
+}
+
+// A member whose own type fails to map (async_sequence is IDL-to-JS only and
+// MapType errors on it) must propagate, not be silently dropped.
+func TestUnionMembersErroringMemberPropagated(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	u := &webidl.IDLType{
+		Union:    true,
+		Subtypes: []*webidl.IDLType{{Base: "double"}, {Generic: "async_sequence", Subtypes: []*webidl.IDLType{{Base: "long"}}}},
+	}
+	if _, err := m.UnionMembers(u); err == nil {
+		t.Error("UnionMembers(erroring member) expected error, got nil")
+	}
+}
+
+// --- CallbackFunctionSignature: nil-safety / error paths --------------------
+
+// A nil ReturnType means void (same as Base=="undefined"), and must not panic.
+func TestCallbackFunctionSignatureNilReturnType(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	cb := &webidl.CallbackFunction{
+		Name:       "NilRet",
+		ReturnType: nil,
+		Arguments:  []*webidl.Argument{{Name: "x", IDLType: &webidl.IDLType{Base: "long"}}},
+	}
+	sig, err := m.CallbackFunctionSignature(cb)
+	if err != nil {
+		t.Fatalf("CallbackFunctionSignature(nil return) returned error: %v", err)
+	}
+	if sig.Return.String() != "" {
+		t.Errorf("nil-return callback Return = %q, want \"\"", sig.Return.String())
+	}
+	if len(sig.Params) != 1 || sig.Params[0].GoType.String() != "int32" {
+		t.Errorf("nil-return callback Params = %#v, want one int32 param", sig.Params)
+	}
+}
+
+// A parameter whose type fails to map must surface as an error, not a silent any.
+func TestCallbackFunctionSignatureParamMapErrorPropagated(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	cb := &webidl.CallbackFunction{
+		Name:       "BadParam",
+		ReturnType: &webidl.IDLType{Base: "undefined"},
+		Arguments:  []*webidl.Argument{{Name: "bad", IDLType: &webidl.IDLType{Generic: "async_sequence", Subtypes: []*webidl.IDLType{{Base: "long"}}}}},
+	}
+	if _, err := m.CallbackFunctionSignature(cb); err == nil {
+		t.Error("CallbackFunctionSignature(param map error) expected error, got nil")
+	}
+}
+
+// A nil Argument element must be rejected, not dereferenced.
+func TestCallbackFunctionSignatureNilArgumentReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	cb := &webidl.CallbackFunction{
+		Name:       "NilArg",
+		ReturnType: &webidl.IDLType{Base: "undefined"},
+		Arguments:  []*webidl.Argument{{Name: "e", IDLType: &webidl.IDLType{Base: "DOMString"}}, nil},
+	}
+	if _, err := m.CallbackFunctionSignature(cb); err == nil {
+		t.Error("CallbackFunctionSignature(nil argument) expected error, got nil")
+	}
+}
+
+// --- CallbackInterfaceSignature: variant + Special handling -----------------
+
+// A mixin is not a callback interface — reject it. Guards an impl that checks
+// `Variant == IfaceRegular` instead of `Variant != IfaceCallback`.
+func TestCallbackInterfaceSignatureMixinVariantReturnsError(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	iface := &webidl.Interface{
+		Variant: webidl.IfaceMixin,
+		Name:    "MixinNotCallback",
+		Members: []webidl.Member{
+			&webidl.Operation{Name: "op", ReturnType: &webidl.IDLType{Base: "undefined"}},
+		},
+	}
+	if _, err := m.CallbackInterfaceSignature(iface); err == nil {
+		t.Error("CallbackInterfaceSignature(mixin variant) expected error, got nil")
+	}
+}
+
+// "The single operation" means the single *regular* (Special=="") operation;
+// special operations (getter/setter/static/stringifier) are not it and must be
+// skipped, so a callback interface with one special op + one regular op resolves
+// the regular one.
+func TestCallbackInterfaceSignatureSkipsSpecialOps(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	iface := &webidl.Interface{
+		Variant: webidl.IfaceCallback,
+		Name:    "WithSpecial",
+		Members: []webidl.Member{
+			&webidl.Operation{Name: "", Special: "getter", ReturnType: &webidl.IDLType{Base: "undefined"}},
+			&webidl.Operation{
+				Name:       "call",
+				Special:    "",
+				ReturnType: &webidl.IDLType{Base: "boolean"},
+				Arguments:  []*webidl.Argument{{Name: "x", IDLType: &webidl.IDLType{Base: "double"}}},
+			},
+		},
+	}
+	sig, err := m.CallbackInterfaceSignature(iface)
+	if err != nil {
+		t.Fatalf("CallbackInterfaceSignature(special+regular) returned error: %v", err)
+	}
+	if sig.Return.String() != "bool" {
+		t.Errorf("Return = %q, want bool", sig.Return.String())
+	}
+	if len(sig.Params) != 1 || sig.Params[0].GoType.String() != "float64" {
+		t.Errorf("Params = %#v, want one float64 param", sig.Params)
+	}
+}
+
+// An interface whose only operation is special has zero regular operations and
+// must be rejected.
+func TestCallbackInterfaceSignatureSingleSpecialOpRejected(t *testing.T) {
+	t.Parallel()
+	m := Mapper{}
+	iface := &webidl.Interface{
+		Variant: webidl.IfaceCallback,
+		Name:    "OnlySpecial",
+		Members: []webidl.Member{
+			&webidl.Operation{Name: "s", Special: "static", ReturnType: &webidl.IDLType{Base: "undefined"}},
+		},
+	}
+	if _, err := m.CallbackInterfaceSignature(iface); err == nil {
+		t.Error("CallbackInterfaceSignature(only a special op) expected error, got nil")
 	}
 }
 
