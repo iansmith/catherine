@@ -133,7 +133,7 @@ func (m Mapper) CallbackInterfaceSignature(iface *webidl.Interface) (CallbackSig
 	count := 0
 	for _, member := range iface.Members {
 		o, ok := member.(*webidl.Operation)
-		if !ok || o.Special != "" {
+		if !ok || o == nil || o.Special != "" {
 			continue
 		}
 		count++
@@ -148,6 +148,13 @@ func (m Mapper) CallbackInterfaceSignature(iface *webidl.Interface) (CallbackSig
 // signatureFrom resolves a shared argument list + return type into a
 // CallbackSignature. Used by both callback functions and callback interface
 // operations. Returns an error on a nil argument or an unmappable type.
+//
+// Note this aborts on the first unmappable/nil argument, unlike the codegen
+// analogues which degrade and continue: codegen.buildParams substitutes `any`
+// + a diagnostic, and codegen.buildCallbackParams drops the offending param.
+// A binding backend cannot emit a correct goja wrapper from a partial
+// signature, so fail-fast is the right contract here — but it is a deliberate
+// divergence from those helpers, not an oversight.
 func (m Mapper) signatureFrom(args []*webidl.Argument, returnType *webidl.IDLType) (CallbackSignature, error) {
 	params := make([]CallbackParam, 0, len(args))
 	for i, a := range args {

@@ -152,7 +152,13 @@ func TestUnionMembersNullableUnion(t *testing.T) {
 		t.Fatalf("UnionMembers(nullable union) returned error: %v", err)
 	}
 	if len(got) != 2 {
-		t.Errorf("UnionMembers(nullable union) len = %d, want 2", len(got))
+		t.Fatalf("UnionMembers(nullable union) len = %d, want 2", len(got))
+	}
+	if !got[0].Unresolved || got[0].String() != "any" {
+		t.Errorf("member 0 = %#v, want unresolved any (Node)", got[0])
+	}
+	if got[1].String() != "string" {
+		t.Errorf("member 1 = %q, want string (DOMString)", got[1].String())
 	}
 }
 
