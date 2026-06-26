@@ -11,7 +11,11 @@ import (
 	"github.com/iansmith/webidl/webidl"
 )
 
-var updateGolden = flag.Bool("update-golden", false, "regenerate codegen golden files")
+// updateGolden regenerates the checked-in golden files from current generator
+// output. It is a developer convenience — CI must NEVER pass it, or the golden
+// stops being an independent oracle and silently rubber-stamps whatever the
+// generator emits.
+var updateGolden = flag.Bool("update-golden", false, "regenerate codegen golden files (never set in CI)")
 
 // ===========================================================================
 // CATH-64: goja DynamicObject binding accessor generator (red tests)
@@ -447,6 +451,83 @@ func TestBinding_Iterable_RoutesMethods(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("iterable routing missing %q\n---\n%s", want, src)
 		}
+	}
+}
+
+// ===========================================================================
+// CATH-64: code-review fixes — the binding must mirror the layer-1 generator's
+// member naming + drop decisions (shared source of truth), not re-derive them.
+// ===========================================================================
+
+// F1: an injected iteration method (maplike get/has/...) colliding with a
+// same-named declared operation is benign (distinct Go names in layer-1) and
+// must NOT record an error that aborts the whole GenerateBindings run.
+func TestBinding_MaplikeMethodCollidesWithOp_NonFatal(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Headers", "",
+		op("get", idlType("DOMString"), arg("name", "DOMString")),
+		maplike("DOMString", "DOMString", false))
+	diag := codegen.NewDiagnostics()
+	decls := codegen.NewBindingDecls(def, tm, diag)
+	if !diag.IsClean() {
+		t.Errorf("benign maplike/op name collision must be a warning, not an error:\n%s", diag.Format())
+	}
+	src := sourceOf(t, firstDecl(t, decls), gojaPkg)
+	if n := strings.Count(src, `case "get"`); n != 1 {
+		t.Errorf("want exactly one `case \"get\"` (declared op wins), got %d\n%s", n, src)
+	}
+}
+
+// F2: an operation and an iterable method whose JS names differ but sanitize to
+// the SAME Go name (op `for_each` → ForEach ; iterable `forEach` → ForEach)
+// collide in layer-1 (Go-name dedup drops the iterable's). The binding must
+// make the same drop — not emit the iterable's forEach case (callbackFn form)
+// dispatching into the op's ForEach with mismatched args.
+func TestBinding_GoNameCollision_MirrorsLayer1Drop(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Thing", "",
+		op("for_each", idlType("undefined"), arg("x", "any")),
+		iterable("any"))
+	diag := codegen.NewDiagnostics()
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, diag)), gojaPkg)
+	if strings.Contains(src, "callbackFn") {
+		t.Errorf("iterable forEach must be dropped — Go name ForEach already claimed by op for_each\n%s", src)
+	}
+	if !strings.Contains(src, `case "for_each"`) {
+		t.Errorf("declared op for_each should still be emitted\n%s", src)
+	}
+	if !diag.IsClean() {
+		t.Errorf("the dropped injected method must be a warning, not an error:\n%s", diag.Format())
+	}
+}
+
+// F3: constants must pass through the same Go-name dedup the layer-1 const block
+// applies. `a-b` and `a_b` both sanitize to Go const NodeAB; layer-1 drops the
+// second, so the binding must reference NodeAB exactly once (not emit a case for
+// a const the layer-1 backend never declared).
+func TestBinding_Constants_GoNameCollision_MirrorsLayer1(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Node", "",
+		constMember("a-b", idlConstType("unsigned short"), "1"),
+		constMember("a_b", idlConstType("unsigned short"), "2"))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if n := strings.Count(src, "NodeAB"); n != 1 {
+		t.Errorf("Go-name-colliding consts: want one NodeAB reference (layer-1 drops the second), got %d\n%s", n, src)
+	}
+}
+
+// F4: a void/undefined-returning indexed getter produces a layer-1 `Index(uint32)`
+// with NO return; the binding must not wrap that no-value call in ToValue.
+func TestBinding_VoidIndexGetter_NoToValueWrap(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Sink", "",
+		specialOp("getter", idlType("undefined"), arg("index", "unsigned long")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if strings.Contains(src, "ToValue(b.impl.Index(i))") {
+		t.Errorf("void index getter must not wrap b.impl.Index(i) in ToValue (Index has no return)\n%s", src)
+	}
+	if !strings.Contains(src, "b.impl.Index(i)") {
+		t.Errorf("index getter must still dispatch b.impl.Index(i)\n%s", src)
 	}
 }
 

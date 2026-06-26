@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/iansmith/webidl/typemap"
 	"github.com/iansmith/webidl/webidl"
@@ -66,7 +65,8 @@ func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics
 		idlName:  iface.Name,
 		tm:       tm,
 		diag:     diag,
-		seen:     make(map[string]bool),
+		goSeen:   make(map[string]bool),
+		jsSeen:   make(map[string]bool),
 	}
 	if iface.Inheritance != "" {
 		b.parentName = IdentSanitize(iface.Inheritance)
@@ -74,39 +74,80 @@ func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics
 	for _, mem := range def.Members {
 		b.add(mem)
 	}
+	b.addConstants(def.Members)
 	return []Decl{b.toDecl()}
 }
 
 // bindingBuilder accumulates the rendered fragments of one binding type as it
-// walks an interface's members. A single ordered walk feeds every DynamicObject
-// method, and the shared seen set enforces first-wins so no JS key produces a
-// duplicate (which would be an illegal duplicate `case` label).
+// walks an interface's members. It enforces the SAME drop decisions the layer-1
+// generator (iface.go) makes — using the shared name derivations in members.go —
+// so the binding never dispatches into a method the interface did not generate.
+//
+// Two dedup namespaces are tracked:
+//   - goSeen: Go method names actually emitted by the layer-1 interface (mirrors
+//     iface.go's per-method seen set). A member whose Go name is already claimed
+//     is dropped, exactly as iface.go drops it.
+//   - jsSeen: the JS keys used as `case` labels across Get/Set/Has. This is the
+//     binding's own constraint — every member kind shares one switch, so a key
+//     may appear at most once or the emitted Go has a duplicate `case` label.
 type bindingBuilder struct {
 	typeName   string
 	parentName string // "" if the interface has no parent
 	idlName    string
 	tm         typemap.Mapper
 	diag       *Diagnostics
-	seen       map[string]bool
+	goSeen     map[string]bool // Go method names (mirrors iface.go)
+	jsSeen     map[string]bool // JS switch keys (binding-specific)
 
 	getCases []string // rendered `case "x": ...` blocks for Get
 	setCases []string // rendered `case "x": ...` blocks for Set
 	keyNames []string // JS-visible enumerable names, in declaration order
 
-	stringifier  bool
-	indexGetter  bool
-	indexSetter  bool
-	indexDeleter bool
-	indexValType string // V type for SetIndex coercion
+	stringifier    bool
+	indexGetter    bool
+	indexGetterRet bool // true when the indexed getter returns a value (not void)
+	indexSetter    bool
+	indexDeleter   bool
+	indexValType   string // V type for SetIndex coercion
 }
 
-// claim reserves a JS key (first wins). Returns false if already taken.
-func (b *bindingBuilder) claim(jsName string) bool {
-	if b.seen[jsName] {
-		b.diag.Add("error", fmt.Sprintf("interface %q: binding member %q dropped — key collision (first wins)", b.idlName, jsName))
+// claimMethod reserves a declared member's (attribute/operation) Go name + JS
+// key. A collision is malformed IDL (duplicate member name / Go-name clash) — an
+// error, first-wins — matching iface.go's behaviour for attributes/operations.
+func (b *bindingBuilder) claimMethod(jsName, goName string) bool {
+	if b.goSeen[goName] || b.jsSeen[jsName] {
+		b.diag.Add("error", fmt.Sprintf("interface %q: binding member %q dropped — collision (first wins)", b.idlName, jsName))
 		return false
 	}
-	b.seen[jsName] = true
+	b.goSeen[goName] = true
+	b.jsSeen[jsName] = true
+	return true
+}
+
+// claimInjected reserves a method the binding INJECTS (iteration methods,
+// toString) that legitimately collides with a declared member on real
+// interfaces (e.g. a maplike `get` vs a declared `get()` operation). iface.go
+// drops the injected method with a warning in this case; the binding does the
+// same — non-fatal, so the rest of the interface still generates.
+func (b *bindingBuilder) claimInjected(jsName, goName string) bool {
+	if b.goSeen[goName] || b.jsSeen[jsName] {
+		b.diag.Add("warning", fmt.Sprintf("interface %q: binding %q skipped — collides with an existing member", b.idlName, jsName))
+		return false
+	}
+	b.goSeen[goName] = true
+	b.jsSeen[jsName] = true
+	return true
+}
+
+// claimConstKey reserves a constant's JS key. The constant's Go name is already
+// deduped by resolveConstants (its own namespace); this only guards the switch
+// key against a method of the same name. Non-fatal (skip with a warning).
+func (b *bindingBuilder) claimConstKey(jsName string) bool {
+	if b.jsSeen[jsName] {
+		b.diag.Add("warning", fmt.Sprintf("interface %q: binding constant %q skipped — collides with an existing member", b.idlName, jsName))
+		return false
+	}
+	b.jsSeen[jsName] = true
 	return true
 }
 
@@ -116,17 +157,10 @@ func (b *bindingBuilder) goType(t *webidl.IDLType) string {
 		b.diag.Add("error", fmt.Sprintf("interface %q: binding cannot map type: %v", b.idlName, err))
 		return "any"
 	}
+	if gt.Unresolved {
+		b.diag.Add("warning", fmt.Sprintf("interface %q: binding maps a member to unresolved type %q", b.idlName, gt.String()))
+	}
 	return gt.String()
-}
-
-func bindIsVoid(t *webidl.IDLType) bool {
-	return t == nil || t.Base == "undefined" || t.Base == "void"
-}
-
-// validIdent reports whether sanitized is a usable Go identifier base.
-func validIdent(sanitized string) bool {
-	r := []rune(sanitized)
-	return len(r) > 0 && unicode.IsLetter(r[0])
 }
 
 func (b *bindingBuilder) add(mem webidl.Member) {
@@ -135,11 +169,11 @@ func (b *bindingBuilder) add(mem webidl.Member) {
 		b.addAttribute(m)
 	case *webidl.Operation:
 		b.addOperation(m)
-	case *webidl.Constant:
-		b.addConstant(m)
 	case *webidl.IterableLike:
 		b.addIterable(m)
 	}
+	// *webidl.Constant is handled in a separate pass via resolveConstants so the
+	// binding and the layer-1 const block agree on which constants survive.
 }
 
 func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
@@ -149,21 +183,21 @@ func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
 	if a.Special == "stringifier" {
 		b.stringifier = true
 	}
-	goBase := IdentSanitize(a.Name)
-	if !validIdent(goBase) {
-		b.diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier %q; skipping", b.idlName, a.Name, goBase))
+	if !validGoIdentBase(IdentSanitize(a.Name)) {
+		b.diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier; skipping", b.idlName, a.Name))
 		return
 	}
-	if !b.claim(a.Name) {
+	getter := attrGetterName(a.Name)
+	if !b.claimMethod(a.Name, getter) {
 		return
 	}
-	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(b.impl.%sAttr())", a.Name, goBase))
+	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(b.impl.%s())", a.Name, getter))
 	b.keyNames = append(b.keyNames, a.Name)
 	if a.Readonly {
 		return
 	}
 	typeStr := b.goType(a.IDLType)
-	b.setCases = append(b.setCases, fmt.Sprintf("\tcase %q:\n\t\tb.impl.Set%sAttr(coerce[%s](b.ctx, val))\n\t\treturn true", a.Name, goBase, typeStr))
+	b.setCases = append(b.setCases, fmt.Sprintf("\tcase %q:\n\t\tb.impl.%s(coerce[%s](b.ctx, val))\n\t\treturn true", a.Name, attrSetterName(a.Name), typeStr))
 }
 
 func (b *bindingBuilder) addOperation(op *webidl.Operation) {
@@ -175,6 +209,7 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		return
 	case "getter":
 		b.indexGetter = true
+		b.indexGetterRet = !isVoidReturn(op.ReturnType)
 		return
 	case "setter":
 		b.indexSetter = true
@@ -190,9 +225,12 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 	if op.Name == "" {
 		return // anonymous, non-special — nothing to dispatch
 	}
-	goName := IdentSanitize(op.Name)
-	if !validIdent(goName) {
-		b.diag.Add("error", fmt.Sprintf("interface %q: operation %q sanitizes to invalid Go identifier %q; skipping", b.idlName, op.Name, goName))
+	goName := opGoName(op.Name)
+	if !validGoIdentBase(goName) {
+		b.diag.Add("error", fmt.Sprintf("interface %q: operation %q sanitizes to invalid Go identifier; skipping", b.idlName, op.Name))
+		return
+	}
+	if !b.claimMethod(op.Name, goName) {
 		return
 	}
 	args := make([]string, 0, len(op.Arguments))
@@ -200,24 +238,17 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		args = append(args, fmt.Sprintf("coerce[%s](b.ctx, call.Argument(%d))", b.goType(a.IDLType), i))
 	}
 	call := fmt.Sprintf("b.impl.%s(%s)", goName, strings.Join(args, ", "))
-	if bindIsVoid(op.ReturnType) {
-		b.addCallable(op.Name, call, true)
+	if isVoidReturn(op.ReturnType) {
+		b.emitCallable(op.Name, call, true)
 	} else {
-		b.addCallable(op.Name, fmt.Sprintf("b.ctx.vm.ToValue(%s)", call), false)
+		b.emitCallable(op.Name, fmt.Sprintf("b.ctx.vm.ToValue(%s)", call), false)
 	}
-}
-
-func (b *bindingBuilder) addConstant(c *webidl.Constant) {
-	if !b.claim(c.Name) {
-		return
-	}
-	goConst := b.typeName + IdentSanitize(c.Name)
-	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(%s)", c.Name, goConst))
-	b.keyNames = append(b.keyNames, c.Name)
 }
 
 // addIterable routes the JS-visible iteration methods of an iterable/maplike/
-// setlike declaration into the layer-1 methods iface.go emits for it.
+// setlike declaration into the layer-1 methods iface.go emits for it. Each is an
+// INJECTED method (claimInjected): if its Go name was already claimed by a
+// declared member, it is dropped with a warning — exactly as iface.go does.
 func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
 	types := make([]string, 0, len(it.Types))
 	for _, t := range it.Types {
@@ -235,47 +266,54 @@ func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
 		b.addSeqMethod("values", "Values")
 		b.addSeqMethod("keys", "Keys")
 		b.addSeqMethod("entries", "Entries")
-		b.addCallable("forEach", "b.impl.ForEach(b.ctx.callbackFn(call.Argument(0)))", true)
+		b.addInjected("forEach", "ForEach", "b.impl.ForEach(b.ctx.callbackFn(call.Argument(0)))", true)
 	case webidl.IterMaplike:
-		b.addCallable("get", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Get(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
-		b.addCallable("has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
+		b.addInjected("get", "Get", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Get(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
+		b.addInjected("has", "Has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
 		b.addSeqMethod("keys", "Keys")
 		b.addSeqMethod("values", "Values")
 		b.addSeqMethod("entries", "Entries")
-		b.addCallable("size", "b.ctx.vm.ToValue(b.impl.Size())", false)
+		b.addInjected("size", "Size", "b.ctx.vm.ToValue(b.impl.Size())", false)
 		if !it.Readonly {
-			b.addCallable("set", fmt.Sprintf("b.impl.Set(coerce[%s](b.ctx, call.Argument(0)), coerce[%s](b.ctx, call.Argument(1)))", keyType, valType), true)
-			b.addCallable("delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", keyType), true)
-			b.addCallable("clear", "b.impl.Clear()", true)
+			b.addInjected("set", "Set", fmt.Sprintf("b.impl.Set(coerce[%s](b.ctx, call.Argument(0)), coerce[%s](b.ctx, call.Argument(1)))", keyType, valType), true)
+			b.addInjected("delete", "Delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", keyType), true)
+			b.addInjected("clear", "Clear", "b.impl.Clear()", true)
 		}
 	case webidl.IterSetlike:
-		b.addCallable("has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", valType), false)
+		b.addInjected("has", "Has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", valType), false)
 		b.addSeqMethod("keys", "Keys")
 		b.addSeqMethod("values", "Values")
 		b.addSeqMethod("entries", "Entries")
-		b.addCallable("size", "b.ctx.vm.ToValue(b.impl.Size())", false)
+		b.addInjected("size", "Size", "b.ctx.vm.ToValue(b.impl.Size())", false)
 		if !it.Readonly {
-			b.addCallable("add", fmt.Sprintf("b.impl.Add(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
-			b.addCallable("delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
-			b.addCallable("clear", "b.impl.Clear()", true)
+			b.addInjected("add", "Add", fmt.Sprintf("b.impl.Add(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
+			b.addInjected("delete", "Delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
+			b.addInjected("clear", "Clear", "b.impl.Clear()", true)
 		}
 		// IterAsyncIterable: JS async iteration is deferred (CATH-66+).
 	}
 }
 
-// addSeqMethod adds an iteration method whose layer-1 form returns an iter.Seq,
-// wrapped into a JS iterator by the runtime shim.
+// addSeqMethod adds an injected iteration method whose layer-1 form returns an
+// iter.Seq, wrapped into a JS iterator by the runtime shim.
 func (b *bindingBuilder) addSeqMethod(jsName, goMethod string) {
-	b.addCallable(jsName, fmt.Sprintf("b.ctx.wrapSeq(b.impl.%s())", goMethod), false)
+	b.addInjected(jsName, goMethod, fmt.Sprintf("b.ctx.wrapSeq(b.impl.%s())", goMethod), false)
 }
 
-// addCallable adds a Get case that returns a goja-callable closure. body is
-// either an expression returning a goja.Value (void=false) or a statement
-// (void=true), in which case the closure returns goja.Undefined().
-func (b *bindingBuilder) addCallable(jsName, body string, void bool) {
-	if !b.claim(jsName) {
+// addInjected claims an injected method by (jsName, goName) and, if it survives
+// the collision check, renders its Get case.
+func (b *bindingBuilder) addInjected(jsName, goName, body string, void bool) {
+	if !b.claimInjected(jsName, goName) {
 		return
 	}
+	b.emitCallable(jsName, body, void)
+}
+
+// emitCallable renders a Get case returning a goja-callable closure. body is
+// either an expression returning a goja.Value (void=false) or a statement
+// (void=true), in which case the closure returns goja.Undefined(). It does NOT
+// claim — the caller has already reserved the name.
+func (b *bindingBuilder) emitCallable(jsName, body string, void bool) {
 	var inner string
 	if void {
 		inner = fmt.Sprintf("\t\t%s\n\t\treturn goja.Undefined()", body)
@@ -287,34 +325,49 @@ func (b *bindingBuilder) addCallable(jsName, body string, void bool) {
 	b.keyNames = append(b.keyNames, jsName)
 }
 
+// addConstants emits a Get case per constant the interface exposes, using the
+// shared resolver so the binding references exactly the consts the layer-1 const
+// block declares (same Go-name dedup + type-mappability gate).
+func (b *bindingBuilder) addConstants(members []webidl.Member) {
+	for _, rc := range resolveConstants(b.typeName, members, b.tm, b.diag, b.idlName) {
+		if !b.claimConstKey(rc.jsName) {
+			continue
+		}
+		b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(%s)", rc.jsName, rc.goName))
+		b.keyNames = append(b.keyNames, rc.jsName)
+	}
+}
+
 func (b *bindingBuilder) toDecl() *bindingDecl {
 	if b.stringifier {
-		b.addCallable("toString", "b.ctx.vm.ToValue(b.impl.String())", false)
+		b.addInjected("toString", "String", "b.ctx.vm.ToValue(b.impl.String())", false)
 	}
 	return &bindingDecl{
-		typeName:   b.typeName,
-		parentName: b.parentName,
-		getCases:   b.getCases,
-		setCases:   b.setCases,
-		keyNames:   b.keyNames,
-		indexGet:   b.indexGetter,
-		indexSet:   b.indexSetter,
-		indexDel:   b.indexDeleter,
-		indexVal:   b.indexValType,
+		typeName:     b.typeName,
+		parentName:   b.parentName,
+		getCases:     b.getCases,
+		setCases:     b.setCases,
+		keyNames:     b.keyNames,
+		indexGet:     b.indexGetter,
+		indexGetRet:  b.indexGetterRet,
+		indexSet:     b.indexSetter,
+		indexDel:     b.indexDeleter,
+		indexVal:     b.indexValType,
 	}
 }
 
 // bindingDecl is one generated DynamicObject accessor type.
 type bindingDecl struct {
-	typeName   string
-	parentName string
-	getCases   []string
-	setCases   []string
-	keyNames   []string
-	indexGet   bool
-	indexSet   bool
-	indexDel   bool
-	indexVal   string
+	typeName    string
+	parentName  string
+	getCases    []string
+	setCases    []string
+	keyNames    []string
+	indexGet    bool
+	indexGetRet bool // indexed getter returns a value (wrap in ToValue) vs void
+	indexSet    bool
+	indexDel    bool
+	indexVal    string
 }
 
 func (d *bindingDecl) declName() string { return d.typeName + "Binding" }
@@ -350,7 +403,13 @@ func (d *bindingDecl) writeGet(sb *strings.Builder) {
 		sb.WriteString("\n\t}\n")
 	}
 	if d.indexGet {
-		sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\treturn b.ctx.vm.ToValue(b.impl.Index(i))\n\t}\n")
+		if d.indexGetRet {
+			sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\treturn b.ctx.vm.ToValue(b.impl.Index(i))\n\t}\n")
+		} else {
+			// Void/undefined indexed getter: Index has no return — call it, then
+			// fall through to the no-value result rather than wrapping it.
+			sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.Index(i)\n\t\treturn goja.Undefined()\n\t}\n")
+		}
 	}
 	if d.parentName != "" {
 		sb.WriteString("\treturn b.parent.Get(key)\n}\n\n")

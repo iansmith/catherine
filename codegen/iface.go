@@ -395,11 +395,11 @@ func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typema
 
 func addAttrMethods(idecl *InterfaceDecl, attr *webidl.Attribute, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
 	goBaseName := IdentSanitize(attr.Name)
-	if runes := []rune(goBaseName); len(runes) == 0 || !unicode.IsLetter(runes[0]) {
+	if !validGoIdentBase(goBaseName) {
 		diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier %q; skipping", idlName, attr.Name, goBaseName))
 		return
 	}
-	getterName := goBaseName + "Attr"
+	getterName := attrGetterName(attr.Name)
 	gt, err := tm.MapType(attr.IDLType)
 	if err != nil {
 		diag.Add("error", fmt.Sprintf("interface %q: cannot map type for attribute %q: %v", idlName, attr.Name, err))
@@ -426,7 +426,7 @@ func addAttrMethods(idecl *InterfaceDecl, attr *webidl.Attribute, tm typemap.Map
 	if attr.Readonly {
 		return
 	}
-	setterName := "Set" + goBaseName + "Attr"
+	setterName := attrSetterName(attr.Name)
 	if seen[setterName] {
 		diag.Add("error", fmt.Sprintf("interface %q: attribute setter %q dropped — collision (first wins)", idlName, attr.Name))
 		return
@@ -477,8 +477,8 @@ func addOpMethod(idecl *InterfaceDecl, op *webidl.Operation, tm typemap.Mapper, 
 	if op.Name == "" {
 		return // anonymous with no known special — skip
 	}
-	goName := IdentSanitize(op.Name)
-	if runes := []rune(goName); len(runes) == 0 || !unicode.IsLetter(runes[0]) {
+	goName := opGoName(op.Name)
+	if !validGoIdentBase(goName) {
 		diag.Add("error", fmt.Sprintf("interface %q: operation %q sanitizes to invalid Go identifier %q; skipping", idlName, op.Name, goName))
 		return
 	}
@@ -608,32 +608,17 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 // ---------------------------------------------------------------------------
 
 func buildConstBlock(typeName string, members []webidl.Member, tm typemap.Mapper, diag *Diagnostics, idlName string) *ConstBlockDecl {
-	seen := make(map[string]bool)
-	var entries []constEntry
-	for _, mem := range members {
-		c, ok := mem.(*webidl.Constant)
-		if !ok {
-			continue
-		}
-		goName := typeName + IdentSanitize(c.Name)
-		if seen[goName] {
-			diag.Add("error", fmt.Sprintf("interface %q: constant %q dropped — collision (first wins)", idlName, c.Name))
-			continue
-		}
-		seen[goName] = true
-		gt, err := tm.MapType(c.IDLType)
-		if err != nil {
-			diag.Add("error", fmt.Sprintf("interface %q: cannot map type for const %q: %v", idlName, c.Name, err))
-			continue
-		}
-		entries = append(entries, constEntry{
-			goName: goName,
-			goType: gt.String(),
-			value:  constValueLit(c.Value),
-		})
-	}
-	if len(entries) == 0 {
+	rcs := resolveConstants(typeName, members, tm, diag, idlName)
+	if len(rcs) == 0 {
 		return nil
+	}
+	entries := make([]constEntry, len(rcs))
+	for i, rc := range rcs {
+		entries[i] = constEntry{
+			goName: rc.goName,
+			goType: rc.goType,
+			value:  constValueLit(rc.value),
+		}
 	}
 	return &ConstBlockDecl{typeName: typeName, constants: entries}
 }
@@ -755,10 +740,7 @@ func buildParams(args []*webidl.Argument, tm typemap.Mapper, diag *Diagnostics, 
 // buildReturnType maps an IDLType to a Go return-type string. Returns "" for
 // nil receivers (anonymous stringifier body-less form) and for undefined/void.
 func buildReturnType(t *webidl.IDLType, tm typemap.Mapper, diag *Diagnostics, idlName, opName string) string {
-	if t == nil {
-		return ""
-	}
-	if t.Base == "undefined" || t.Base == "void" {
+	if isVoidReturn(t) {
 		return ""
 	}
 	gt, err := tm.MapType(t)
