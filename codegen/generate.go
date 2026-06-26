@@ -162,7 +162,7 @@ func buildNsMethods(members []webidl.Member, tm typemap.Mapper, diag *Diagnostic
 			continue
 		}
 		out = append(out, nsMethod{
-			goName:     IdentSanitize(op.Name),
+			goName:     opGoName(op.Name),
 			params:     buildParams(op.Arguments, tm, diag, ctx),
 			returnType: buildReturnType(op.ReturnType, tm, diag, ctx, op.Name),
 		})

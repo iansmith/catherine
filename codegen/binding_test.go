@@ -531,6 +531,153 @@ func TestBinding_VoidIndexGetter_NoToValueWrap(t *testing.T) {
 	}
 }
 
+// ===========================================================================
+// CATH-64: code-review pass 2 fixes
+// ===========================================================================
+
+// Special index ops must participate in the same Go-name dedup as named members
+// (mirroring iface.go's addSpecialMethod, which claims Index/SetIndex/Delete).
+// op `delete(DOMString)` (Go name Delete) declared before a deleter (also Delete)
+// → layer-1 keeps one Delete; the binding must drop the deleter, not emit a
+// Delete(uint32) index branch the interface never generated.
+func TestBinding_NamedOpVsDeleter_NoDoubleDelete(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Bag", "",
+		op("delete", idlType("undefined"), arg("key", "DOMString")),
+		specialOp("deleter", idlType("undefined"), arg("key", "DOMString")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if !strings.Contains(src, `case "delete"`) {
+		t.Errorf("named op `delete` (declared first) should win\n%s", src)
+	}
+	if strings.Contains(src, "b.impl.Delete(i)") {
+		t.Errorf("deleter must be dropped — op `delete` already claimed Go name Delete; "+
+			"emitting b.impl.Delete(i) (uint32) dispatches into a method the interface lacks\n%s", src)
+	}
+}
+
+// Symmetric ordering: a deleter declared before a named `delete` op → the index
+// deleter wins, the named op is dropped (no string case dispatching Delete).
+func TestBinding_DeleterVsNamedOp_NoDoubleDelete(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Bag", "",
+		specialOp("deleter", idlType("undefined"), arg("key", "DOMString")),
+		op("delete", idlType("undefined"), arg("key", "DOMString")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if !strings.Contains(src, "b.impl.Delete(i)") {
+		t.Errorf("deleter (declared first) should win → index Delete branch present\n%s", src)
+	}
+	if strings.Contains(src, `case "delete"`) {
+		t.Errorf("named op `delete` must be dropped — deleter already claimed Go name Delete\n%s", src)
+	}
+}
+
+// --- GenerateBindings pipeline (previously untested) ------------------------
+
+func readGenerated(t *testing.T, dir, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(b)
+}
+
+func TestGenerateBindings_WritesBindingFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, "interface Node { readonly attribute unsigned short nodeType; };")
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	src := readGenerated(t, dir, "bindings.go")
+	for _, want := range []string{"package gen", "github.com/dop251/goja", "type NodeBinding struct", "func (b *NodeBinding) Get(key string) goja.Value"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("bindings.go missing %q\n%s", want, src)
+		}
+	}
+}
+
+// An IR with no regular interfaces must not emit an unused goja import (which
+// would make bindings.go fail to compile).
+func TestGenerateBindings_EmptyIR_NoUnusedImport(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, "callback interface CB { undefined handleEvent(); };")
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	src := readGenerated(t, dir, "bindings.go")
+	if strings.Contains(src, "dop251/goja") {
+		t.Errorf("no regular interfaces → must not import goja (unused import won't compile)\n%s", src)
+	}
+}
+
+// Two interfaces whose names collide under IdentSanitize must fail loudly, not
+// silently drop a binding.
+func TestGenerateBindings_NameCollision_FailsLoud(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, "interface foo {}; interface Foo {};")
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err == nil {
+		t.Error("two interfaces sanitizing to the same Go name must error, not silently drop one binding")
+	}
+}
+
+// --- broader-scope coverage the prior pass flagged as missing ---------------
+
+func TestBinding_Setlike_RoutesMethods(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Tags", "", setlike("DOMString", false))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	for _, want := range []string{
+		`case "has"`, "b.impl.Has(",
+		`case "values"`, "b.impl.Values()",
+		`case "add"`, "b.impl.Add(",
+		`case "clear"`, "b.impl.Clear()",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("setlike routing missing %q\n%s", want, src)
+		}
+	}
+}
+
+func TestBinding_ReadonlySetlike_NoMutators(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Tags", "", setlike("DOMString", true))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	for _, mutator := range []string{`case "add"`, `case "delete"`, `case "clear"`} {
+		if strings.Contains(src, mutator) {
+			t.Errorf("readonly setlike must not expose %q\n%s", mutator, src)
+		}
+	}
+}
+
+// All member kinds coexisting in one interface (the real coexistence case).
+func TestBinding_AllKinds_Coexist(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Mega", "Node",
+		attr("id", true, idlAttrType("DOMString")),
+		attr("name", false, idlAttrType("DOMString")),
+		op("compute", idlType("DOMString"), arg("x", "DOMString")),
+		constMember("MAX", idlConstType("unsigned short"), "9"),
+		&webidl.Attribute{Name: "label", IDLType: idlAttrType("DOMString"), Special: "stringifier"},
+		iterable("any"))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	for _, want := range []string{
+		`case "id"`, "b.impl.IdAttr()",
+		`case "name"`, "b.impl.SetNameAttr(",
+		`case "compute"`, "b.impl.Compute",
+		`case "MAX"`, "MegaMAX",
+		`case "toString"`, "b.impl.String()",
+		`case "values"`, "b.impl.Values()",
+		"parent *NodeBinding", "b.parent.Keys()",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("all-kinds coexistence missing %q\n%s", want, src)
+		}
+	}
+}
+
 // --- golden-file snapshot (explicit acceptance criterion) -------------------
 
 func TestBinding_Golden_Element(t *testing.T) {

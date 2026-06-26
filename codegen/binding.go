@@ -139,6 +139,21 @@ func (b *bindingBuilder) claimInjected(jsName, goName string) bool {
 	return true
 }
 
+// claimGoName reserves a special operation's Go method name (Index/SetIndex/
+// Delete). These have no JS switch key — they are numeric-index access — so only
+// the Go-name namespace is claimed. A collision with an already-claimed member
+// (e.g. a named op `delete` → Delete) drops the special op, first-wins, exactly
+// as iface.go's addSpecialMethod does. Without this the two backends could
+// disagree and the binding would dispatch into a method the interface lacks.
+func (b *bindingBuilder) claimGoName(goName string) bool {
+	if b.goSeen[goName] {
+		b.diag.Add("error", fmt.Sprintf("interface %q: binding indexed operation dropped — Go name %q already claimed (first wins)", b.idlName, goName))
+		return false
+	}
+	b.goSeen[goName] = true
+	return true
+}
+
 // claimConstKey reserves a constant's JS key. The constant's Go name is already
 // deduped by resolveConstants (its own namespace); this only guards the switch
 // key against a method of the same name. Non-fatal (skip with a warning).
@@ -208,10 +223,16 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		b.stringifier = true
 		return
 	case "getter":
+		if !b.claimGoName("Index") {
+			return
+		}
 		b.indexGetter = true
 		b.indexGetterRet = !isVoidReturn(op.ReturnType)
 		return
 	case "setter":
+		if !b.claimGoName("SetIndex") {
+			return
+		}
 		b.indexSetter = true
 		b.indexValType = "any"
 		if len(op.Arguments) >= 2 {
@@ -219,6 +240,9 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		}
 		return
 	case "deleter":
+		if !b.claimGoName("Delete") {
+			return
+		}
 		b.indexDeleter = true
 		return
 	}
@@ -492,33 +516,43 @@ func GenerateBindings(ir *webidl.IR, opts Options) error {
 	if opts.PackageName == "" {
 		return fmt.Errorf("codegen.GenerateBindings: Options.PackageName is required")
 	}
+	// Validate the output dir up front, before doing any rendering work.
+	if fi, err := os.Stat(opts.OutputDir); err != nil {
+		return fmt.Errorf("codegen.GenerateBindings: OutputDir %q: %w", opts.OutputDir, err)
+	} else if !fi.IsDir() {
+		return fmt.Errorf("codegen.GenerateBindings: OutputDir %q: not a directory", opts.OutputDir)
+	}
 
 	tm := typemap.Mapper{}
 	diag := NewDiagnostics()
-	f := NewFile(opts.PackageName)
-	tr := NewImportTracker()
-	tr.Add("github.com/dop251/goja")
-	f.SetImports(tr)
 
 	var all []Decl
 	for _, def := range ir.All() {
 		all = append(all, NewBindingDecls(def, tm, diag)...)
 	}
-	for _, d := range DedupeDecls(all) {
-		f.AddDecl(d)
-	}
 	if !diag.IsClean() {
 		return fmt.Errorf("codegen.GenerateBindings: type-mapping errors:\n%s", diag.Format())
+	}
+
+	f := NewFile(opts.PackageName)
+	// Import goja only when there is at least one binding to emit; otherwise the
+	// file would carry an unused import and fail to compile.
+	if len(all) > 0 {
+		tr := NewImportTracker()
+		tr.Add("github.com/dop251/goja")
+		f.SetImports(tr)
+	}
+	// No DedupeDecls: binding decls are one-per-interface with no shared
+	// singletons, so a repeated declName means two interfaces collided under
+	// IdentSanitize — let File.Render surface that as a hard error rather than
+	// silently dropping a binding.
+	for _, d := range all {
+		f.AddDecl(d)
 	}
 
 	src, err := f.Render()
 	if err != nil {
 		return fmt.Errorf("codegen.GenerateBindings: render: %w", err)
-	}
-	if fi, err := os.Stat(opts.OutputDir); err != nil {
-		return fmt.Errorf("codegen.GenerateBindings: OutputDir %q: %w", opts.OutputDir, err)
-	} else if !fi.IsDir() {
-		return fmt.Errorf("codegen.GenerateBindings: OutputDir %q: not a directory", opts.OutputDir)
 	}
 	outPath := filepath.Join(opts.OutputDir, "bindings.go")
 	if err := os.WriteFile(outPath, src, 0o644); err != nil {

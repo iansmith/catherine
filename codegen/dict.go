@@ -3,7 +3,6 @@ package codegen
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 // DictField describes a single field in a WebIDL dictionary. IDLName is the
@@ -54,7 +53,7 @@ func NewDictDecl(idlName string, parentGoName string, fields []DictField, diag *
 			continue
 		}
 		goName := IdentSanitize(f.IDLName)
-		if runes := []rune(goName); !unicode.IsLetter(runes[0]) {
+		if !validGoIdentBase(goName) {
 			diag.Add("error", fmt.Sprintf("dict %q: field IDL name %q sanitizes to invalid Go identifier %q", idlName, f.IDLName, goName))
 			continue
 		}
