@@ -1,11 +1,17 @@
 package codegen_test
 
 import (
+	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/iansmith/webidl/codegen"
+	"github.com/iansmith/webidl/webidl"
 )
+
+var updateGolden = flag.Bool("update-golden", false, "regenerate codegen golden files")
 
 // ===========================================================================
 // CATH-64: goja DynamicObject binding accessor generator (red tests)
@@ -196,17 +202,305 @@ func TestBinding_NoParent_DoesNotDelegate(t *testing.T) {
 // static members are skipped (mirrors layer-1)
 // ---------------------------------------------------------------------------
 
+// Anchored with a real instance member so the "must not contain" checks aren't
+// vacuously true on an empty/stub accessor.
 func TestBinding_StaticMembersSkipped(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Node", "",
+		attr("nodeType", true, idlAttrType("unsigned short")), // instance anchor
 		staticAttr("version", true, idlAttrType("unsigned short")),
 		staticOp("create", idlType("any")))
 	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
 
+	// Positive anchor: the instance member MUST be generated.
+	if !strings.Contains(src, `case "nodeType"`) {
+		t.Fatalf("instance attr anchor `case \"nodeType\"` missing — accessor not generated\n---\n%s", src)
+	}
 	if strings.Contains(src, `case "version"`) || strings.Contains(src, "VersionAttr") {
 		t.Errorf("static attribute must not appear in the instance accessor\n---\n%s", src)
 	}
 	if strings.Contains(src, `case "create"`) || strings.Contains(src, "b.impl.Create") {
 		t.Errorf("static operation must not appear in the instance accessor\n---\n%s", src)
 	}
+}
+
+// ===========================================================================
+// CATH-64: adversary gap tests
+// ===========================================================================
+
+// --- additional guards ------------------------------------------------------
+
+func TestNewBindingDecls_CallbackSkipped(t *testing.T) {
+	t.Parallel()
+	def := callbackMergedDef("EventListener", op("handleEvent", idlType("undefined"), arg("event", "any")))
+	if decls := codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics()); len(decls) != 0 {
+		t.Errorf("NewBindingDecls(callback interface) = %d decls, want 0", len(decls))
+	}
+}
+
+func TestNewBindingDecls_NonInterfacePrimary(t *testing.T) {
+	t.Parallel()
+	def := &webidl.MergedDef{Primary: &webidl.Dictionary{Name: "Options"}}
+	if decls := codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics()); len(decls) != 0 {
+		t.Errorf("NewBindingDecls(dictionary primary) = %d decls, want 0", len(decls))
+	}
+}
+
+// --- empty interface boundary ----------------------------------------------
+
+func TestBinding_EmptyInterface_StillEmitsMethodSet(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("EventTarget", "")
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	for _, want := range []string{
+		"type EventTargetBinding struct",
+		"func (b *EventTargetBinding) Get(key string) goja.Value",
+		"func (b *EventTargetBinding) Keys() []string",
+		"goja.Undefined()", // empty switch falls straight through
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("empty-interface binding missing %q\n---\n%s", want, src)
+		}
+	}
+	// Keys() must return a non-nil empty slice, not `return nil`, so JS sees [].
+	if strings.Contains(src, "return nil") {
+		t.Errorf("empty-interface Keys() should return an empty slice literal, not nil\n---\n%s", src)
+	}
+}
+
+// --- mixed members coexist in one accessor (headline) -----------------------
+
+func TestBinding_MixedMembers_Coexist(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Element", "Node",
+		attr("id", true, idlAttrType("DOMString")),
+		attr("className", false, idlAttrType("DOMString")),
+		op("getAttribute", idlType("DOMString"), arg("name", "DOMString")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// All three own members must appear together in Get.
+	for _, want := range []string{
+		`case "id"`, "b.impl.IdAttr()",
+		`case "className"`, "b.impl.ClassNameAttr()",
+		`case "getAttribute"`, "b.impl.GetAttribute",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("mixed Get missing %q\n---\n%s", want, src)
+		}
+	}
+	// Writable setter present; readonly attr gets NO setter.
+	if !strings.Contains(src, "b.impl.SetClassNameAttr(") {
+		t.Errorf("writable attr missing setter dispatch\n---\n%s", src)
+	}
+	if strings.Contains(src, "SetIdAttr") {
+		t.Errorf("readonly attr `id` must not get a setter dispatch\n---\n%s", src)
+	}
+	// Inheritance wired alongside own members.
+	if !strings.Contains(src, "parent *NodeBinding") || !strings.Contains(src, "b.parent.Keys()") {
+		t.Errorf("mixed accessor lost inheritance wiring\n---\n%s", src)
+	}
+}
+
+// --- operation closure must coerce args and wrap the return -----------------
+
+func TestBinding_Operation_CoercesArgsAndWrapsReturn(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Node", "",
+		op("appendChild", idlType("any"), arg("node", "any")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// The closure must actually read its argument from the call...
+	if !strings.Contains(src, "call.Argument(0)") {
+		t.Errorf("operation closure ignores its argument (no call.Argument(0))\n---\n%s", src)
+	}
+	// ...and wrap the Go return back into a goja.Value.
+	if !strings.Contains(src, "b.ctx.vm.ToValue(") {
+		t.Errorf("operation closure must wrap its return via b.ctx.vm.ToValue(...)\n---\n%s", src)
+	}
+}
+
+// --- name collision: a single case label (else duplicate-case = build error) -
+
+func TestBinding_NameCollision_FirstWins(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Foo", "",
+		attr("thing", true, idlAttrType("DOMString")),
+		op("thing", idlType("any")))
+	diag := codegen.NewDiagnostics()
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, diag)), gojaPkg)
+
+	if n := strings.Count(src, `case "thing"`); n != 1 {
+		t.Errorf("collision must yield exactly one `case \"thing\"`, got %d (duplicate case = compile error)\n---\n%s", n, src)
+	}
+}
+
+// --- Has / Delete / Set bodies (not just signatures) ------------------------
+
+func TestBinding_Has_DelegatesToParent(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Element", "Node", attr("className", false, idlAttrType("DOMString")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// Has must recognise an own member and fall through to the parent.
+	if !strings.Contains(src, `"className"`) {
+		t.Errorf("Has/source must reference own member name\n---\n%s", src)
+	}
+	if !strings.Contains(src, "b.parent.Has(key)") {
+		t.Errorf("Has must delegate unknown keys to b.parent.Has(key)\n---\n%s", src)
+	}
+}
+
+func TestBinding_Delete_RootReturnsFalse(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Node", "", attr("nodeType", true, idlAttrType("unsigned short")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// A plain accessor cannot delete native props: Delete returns false.
+	deleteBody := sliceBetween(src, "func (b *NodeBinding) Delete(key string) bool", "\n}")
+	if !strings.Contains(deleteBody, "return false") {
+		t.Errorf("root Delete must return false\n---\n%s", src)
+	}
+}
+
+func TestBinding_Set_UnknownKeyReturnsFalse(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Node", "", attr("nodeType", true, idlAttrType("unsigned short")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	setBody := sliceBetween(src, "func (b *NodeBinding) Set(key string, val goja.Value) bool", "\nfunc ")
+	// readonly attr => no setter dispatch, and Set falls through to false.
+	if strings.Contains(setBody, "nodeType") {
+		t.Errorf("readonly attr must not appear in Set\n---\n%s", setBody)
+	}
+	if !strings.Contains(setBody, "return false") {
+		t.Errorf("Set must return false for unknown/readonly keys\n---\n%s", setBody)
+	}
+}
+
+// ===========================================================================
+// CATH-64: broader-scope member kinds (special ops, stringifier, constants,
+// iterables) — per the chosen first-cut scope.
+// ===========================================================================
+
+func TestBinding_SpecialIndexedOps(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("NodeList", "",
+		specialOp("getter", idlType("any"), arg("index", "unsigned long")),
+		specialOp("setter", idlType("undefined"), arg("index", "unsigned long"), arg("value", "any")),
+		specialOp("deleter", idlType("undefined"), arg("index", "unsigned long")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// Indexed access routes into the layer-1 Index/SetIndex/Delete(uint32).
+	if !strings.Contains(src, "b.impl.Index(") {
+		t.Errorf("indexed getter must dispatch b.impl.Index(...)\n---\n%s", src)
+	}
+	if !strings.Contains(src, "b.impl.SetIndex(") {
+		t.Errorf("indexed setter must dispatch b.impl.SetIndex(...)\n---\n%s", src)
+	}
+	// The deleter routes the uint32 Delete; a string `index` key must not appear.
+	if strings.Contains(src, `case "index"`) {
+		t.Errorf("indexed special ops must not surface a string `case \"index\"`\n---\n%s", src)
+	}
+}
+
+func TestBinding_Stringifier_ToString(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("URL", "",
+		&webidl.Attribute{Name: "href", IDLType: idlAttrType("DOMString"), Special: "stringifier"})
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	if !strings.Contains(src, `case "toString"`) {
+		t.Errorf("stringifier must expose a `toString` key\n---\n%s", src)
+	}
+	if !strings.Contains(src, "b.impl.String()") {
+		t.Errorf("toString must dispatch b.impl.String()\n---\n%s", src)
+	}
+}
+
+func TestBinding_Constants_ExposedAsKeys(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Node", "",
+		constMember("ELEMENT_NODE", idlConstType("unsigned short"), "1"))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	if !strings.Contains(src, `case "ELEMENT_NODE"`) {
+		t.Errorf("constant must be exposed as a readable key\n---\n%s", src)
+	}
+	// Dispatches the layer-1 const name: typeName + IdentSanitize(constName).
+	if !strings.Contains(src, "NodeELEMENTNODE") {
+		t.Errorf("constant case must reference the generated const NodeELEMENTNODE\n---\n%s", src)
+	}
+}
+
+func TestBinding_Iterable_RoutesMethods(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("NodeList", "", iterable("any"))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// JS-visible iteration methods route into the layer-1 iterable methods.
+	for _, want := range []string{
+		`case "values"`, "b.impl.Values()",
+		`case "entries"`, "b.impl.Entries()",
+		`case "forEach"`, "b.impl.ForEach",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("iterable routing missing %q\n---\n%s", want, src)
+		}
+	}
+}
+
+// --- golden-file snapshot (explicit acceptance criterion) -------------------
+
+func TestBinding_Golden_Element(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Element", "Node",
+		attr("id", true, idlAttrType("DOMString")),
+		attr("className", false, idlAttrType("DOMString")),
+		op("getAttribute", idlType("DOMString"), arg("name", "DOMString")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	assertGolden(t, "element_binding.golden", src)
+}
+
+// ---------------------------------------------------------------------------
+// test helpers
+// ---------------------------------------------------------------------------
+
+// assertGolden compares got against testdata/<name>, or rewrites it with
+// -update-golden. A missing golden file is a failure (Phase-0 RED until the
+// generator is implemented and the golden is captured).
+func assertGolden(t *testing.T, name, got string) {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	if *updateGolden {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatalf("mkdir testdata: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+			t.Fatalf("write golden %s: %v", path, err)
+		}
+		return
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("golden %s missing (run with -update-golden after implementing): %v", path, err)
+	}
+	if string(want) != got {
+		t.Errorf("golden %s mismatch\n--- got ---\n%s\n--- want ---\n%s", path, got, want)
+	}
+}
+
+// sliceBetween returns the substring of s from the first occurrence of start up
+// to the next occurrence of end after it (or end-of-string). Returns "" if
+// start is absent.
+func sliceBetween(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i:]
+	if j := strings.Index(rest[len(start):], end); j >= 0 {
+		return rest[:len(start)+j]
+	}
+	return rest
 }
