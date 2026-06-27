@@ -685,19 +685,21 @@ func TestBinding_Maplike_RoutesMethods(t *testing.T) {
 	def := regularMergedDef("Map1", "", maplike("DOMString", "long", false))
 	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
 	for _, want := range []string{
-		`case "get"`, "b.impl.Get(",
-		`case "has"`, "b.impl.Has(",
-		`case "keys"`, "b.impl.Keys()",
-		`case "values"`, "b.impl.Values()",
-		`case "entries"`, "b.impl.Entries()",
-		`case "size"`, "b.impl.Size()",
-		`case "set"`, "b.impl.Set(",
-		`case "delete"`, "b.impl.Delete(",
-		`case "clear"`, "b.impl.Clear()",
+		`case "get"`, `case "has"`, `case "keys"`, `case "values"`,
+		`case "entries"`, `case "size"`, `case "set"`, `case "delete"`, `case "clear"`,
+		// wrap shapes — assert each render branch, not just method presence:
+		"b.ctx.wrapSeq(b.impl.Values())",         // renderSeq
+		"b.ctx.vm.ToValue(b.impl.Get(",           // renderScalar
+		"b.ctx.vm.ToValue(b.impl.Size())",        // renderScalar, no args
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("maplike routing missing %q\n%s", want, src)
 		}
+	}
+	// renderVoid: the mutator must NOT be ToValue-wrapped (it's a statement
+	// returning goja.Undefined()).
+	if strings.Contains(src, "ToValue(b.impl.Set(") || !strings.Contains(src, "b.impl.Set(") {
+		t.Errorf("maplike `set` must render as a void mutator, not a ToValue-wrapped expression\n%s", src)
 	}
 }
 
@@ -750,6 +752,16 @@ func TestBinding_Golden_Element(t *testing.T) {
 		op("getAttribute", idlType("DOMString"), arg("name", "DOMString")))
 	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
 	assertGolden(t, "element_binding.golden", src)
+}
+
+// Golden for a non-readonly maplike — pins the full iteration rendering (the
+// three wrap shapes: wrapSeq for keys/values/entries, ToValue for get/has/size,
+// void mutators for set/delete/clear), which the Element golden does not cover.
+func TestBinding_Golden_Maplike(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("StringMap", "", maplike("DOMString", "DOMString", false))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	assertGolden(t, "stringmap_binding.golden", src)
 }
 
 // ---------------------------------------------------------------------------

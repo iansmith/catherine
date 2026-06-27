@@ -1,0 +1,79 @@
+package gen
+
+import (
+	"github.com/dop251/goja"
+)
+
+type StringMapBinding struct {
+	ctx  *bindCtx
+	impl StringMap
+}
+
+func (b *StringMapBinding) Get(key string) goja.Value {
+	switch key {
+	case "get":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.vm.ToValue(b.impl.Get(coerce[string](b.ctx, call.Argument(0))))
+		})
+	case "has":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.vm.ToValue(b.impl.Has(coerce[string](b.ctx, call.Argument(0))))
+		})
+	case "keys":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.wrapSeq(b.impl.Keys())
+		})
+	case "values":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.wrapSeq(b.impl.Values())
+		})
+	case "entries":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.wrapSeq(b.impl.Entries())
+		})
+	case "size":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.vm.ToValue(b.impl.Size())
+		})
+	case "set":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			b.impl.Set(coerce[string](b.ctx, call.Argument(0)), coerce[string](b.ctx, call.Argument(1)))
+			return goja.Undefined()
+		})
+	case "delete":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			b.impl.Delete(coerce[string](b.ctx, call.Argument(0)))
+			return goja.Undefined()
+		})
+	case "clear":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			b.impl.Clear()
+			return goja.Undefined()
+		})
+	}
+	return goja.Undefined()
+}
+
+func (b *StringMapBinding) Set(key string, val goja.Value) bool {
+	return false
+}
+
+func (b *StringMapBinding) Has(key string) bool {
+	return key == "get" ||
+		key == "has" ||
+		key == "keys" ||
+		key == "values" ||
+		key == "entries" ||
+		key == "size" ||
+		key == "set" ||
+		key == "delete" ||
+		key == "clear"
+}
+
+func (b *StringMapBinding) Delete(key string) bool {
+	return false
+}
+
+func (b *StringMapBinding) Keys() []string {
+	return []string{"get", "has", "keys", "values", "entries", "size", "set", "delete", "clear"}
+}

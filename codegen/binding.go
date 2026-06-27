@@ -216,34 +216,8 @@ func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
 }
 
 func (b *bindingBuilder) addOperation(op *webidl.Operation) {
-	switch op.Special {
-	case "static":
-		return
-	case "stringifier":
-		b.stringifier = true
-		return
-	case "getter":
-		if !b.claimGoName(idxGetterGoName) {
-			return
-		}
-		b.indexGetter = true
-		b.indexGetterRet = !isVoidReturn(op.ReturnType)
-		return
-	case "setter":
-		if !b.claimGoName(idxSetterGoName) {
-			return
-		}
-		b.indexSetter = true
-		b.indexValType = "any"
-		if len(op.Arguments) >= 2 {
-			b.indexValType = b.goType(op.Arguments[1].IDLType)
-		}
-		return
-	case "deleter":
-		if !b.claimGoName(idxDeleterGoName) {
-			return
-		}
-		b.indexDeleter = true
+	if op.Special != "" {
+		b.addSpecialOp(op)
 		return
 	}
 	if op.Name == "" {
@@ -269,6 +243,35 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 	}
 }
 
+// addSpecialOp records a special operation (static/stringifier/getter/setter/
+// deleter). The indexed getter/setter/deleter claim their Go names through the
+// shared dedup so they mirror iface.go's drop decisions; static ops are skipped
+// (handled by the static decls) and stringifiers surface a toString key.
+func (b *bindingBuilder) addSpecialOp(op *webidl.Operation) {
+	switch op.Special {
+	case "stringifier":
+		b.stringifier = true
+	case "getter":
+		if b.claimGoName(idxGetterGoName) {
+			b.indexGetter = true
+			b.indexGetterRet = !isVoidReturn(op.ReturnType)
+		}
+	case "setter":
+		if b.claimGoName(idxSetterGoName) {
+			b.indexSetter = true
+			b.indexValType = "any"
+			if len(op.Arguments) >= 2 {
+				b.indexValType = b.goType(op.Arguments[1].IDLType)
+			}
+		}
+	case "deleter":
+		if b.claimGoName(idxDeleterGoName) {
+			b.indexDeleter = true
+		}
+	}
+	// "static": instance binding skips static members.
+}
+
 // addIterable routes the JS-visible iteration methods of an iterable/maplike/
 // setlike declaration into the layer-1 methods iface.go emits for it. Each is an
 // INJECTED method (claimInjected): if its Go name was already claimed by a
@@ -289,11 +292,11 @@ func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
 }
 
 // iterCallBody renders the goja call body for an iteration method, dispatching
-// into the layer-1 method m.goName. Wrapping depends on the layer-1 shape:
-// iter.Seq returns go through the shim's wrapSeq; void mutators just call; the
-// forEach callback is adapted via the shim; everything else wraps with ToValue.
+// into the layer-1 method m.goName. The wrap shape comes from m.render (set in
+// resolveIterMethods), not from sniffing the rendered Go type — so the binding
+// stays decoupled from iface.go's exact type spelling.
 func iterCallBody(m iterMethod) string {
-	if m.jsName == "forEach" {
+	if m.render == renderForEach {
 		return "b.impl.ForEach(b.ctx.callbackFn(call.Argument(0)))"
 	}
 	args := make([]string, len(m.params))
@@ -301,12 +304,12 @@ func iterCallBody(m iterMethod) string {
 		args[i] = fmt.Sprintf("coerce[%s](b.ctx, call.Argument(%d))", p.goType, i)
 	}
 	call := fmt.Sprintf("b.impl.%s(%s)", m.goName, strings.Join(args, ", "))
-	switch {
-	case strings.HasPrefix(m.returnType, "iter.Seq"):
+	switch m.render {
+	case renderSeq:
 		return fmt.Sprintf("b.ctx.wrapSeq(%s)", call)
-	case m.returnType == "":
-		return call // void mutator
-	default:
+	case renderVoid:
+		return call
+	default: // renderScalar
 		return fmt.Sprintf("b.ctx.vm.ToValue(%s)", call)
 	}
 }
@@ -314,7 +317,7 @@ func iterCallBody(m iterMethod) string {
 // iterMethodVoid reports whether the rendered closure body is a statement (void)
 // rather than an expression returning a goja.Value.
 func iterMethodVoid(m iterMethod) bool {
-	return m.jsName == "forEach" || m.returnType == ""
+	return m.render == renderForEach || m.render == renderVoid
 }
 
 // addInjected claims an injected method by (jsName, goName) and, if it survives

@@ -67,17 +67,31 @@ type resolvedConst struct {
 	value  *webidl.ConstValue
 }
 
+// iterRenderKind tells the binding how to render an iteration method's goja
+// body. It is set where the method is declared (resolveIterMethods) so the
+// binding switches on intent rather than re-sniffing the rendered Go type
+// string — decoupling it from iface.go's exact type spelling.
+type iterRenderKind int
+
+const (
+	renderScalar  iterRenderKind = iota // wrap the result in ToValue
+	renderSeq                           // wrap the iter.Seq result via the shim's wrapSeq
+	renderVoid                          // statement (mutator); closure returns Undefined
+	renderForEach                       // callback-adapted forEach
+)
+
 // iterMethod is one JS-visible iteration method of an iterable/maplike/setlike
 // declaration, in the form both backends need: iface.go reads goName + params +
 // returnType to declare the layer-1 interface method; the binding reads jsName +
-// goName + params + returnType to emit the accessor case. It is the single
-// source of truth for the per-kind method set, the readonly gating, and the
-// key/value type arity.
+// goName + params + render to emit the accessor case. It is the single source of
+// truth for the per-kind method set, the readonly gating, and the key/value type
+// arity.
 type iterMethod struct {
-	jsName     string       // JS key (e.g. "values", "forEach", "set"); "" for async (binding skips)
-	goName     string       // layer-1 Go method (e.g. "Values", "ForEach", "Set")
-	params     []ifaceParam // layer-1 signature params
-	returnType string       // layer-1 return type ("" for void)
+	jsName     string         // JS key (e.g. "values", "forEach", "set"); "" for async (binding skips)
+	goName     string         // layer-1 Go method (e.g. "Values", "ForEach", "Set")
+	params     []ifaceParam   // layer-1 signature params
+	returnType string         // layer-1 return type ("" for void)
+	render     iterRenderKind // how the binding wraps the dispatch
 }
 
 // resolveIterMethods returns the ordered iteration methods an iterable/maplike/
@@ -97,9 +111,6 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 		typeStrs = append(typeStrs, gt.String())
 	}
 
-	seq := func(elem string) string { return "iter.Seq[" + elem + "]" }
-	seq2 := func(k, v string) string { return "iter.Seq2[" + k + ", " + v + "]" }
-
 	switch it.Kind {
 	case webidl.IterIterable:
 		valType, keyType := "any", "uint32"
@@ -109,28 +120,14 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 			keyType, valType = typeStrs[0], typeStrs[1]
 		}
 		return []iterMethod{
-			{jsName: "values", goName: "Values", returnType: seq(valType)},
-			{jsName: "keys", goName: "Keys", returnType: seq(keyType)},
-			{jsName: "entries", goName: "Entries", returnType: seq2(keyType, valType)},
-			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}},
+			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
+			{jsName: "keys", goName: "Keys", returnType: iterSeq(keyType), render: renderSeq},
+			{jsName: "entries", goName: "Entries", returnType: iterSeq2(keyType, valType), render: renderSeq},
+			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}, render: renderForEach},
 		}
 
 	case webidl.IterAsyncIterable:
-		valType := "any"
-		if len(typeStrs) >= 1 {
-			valType = typeStrs[len(typeStrs)-1]
-		}
-		out := []iterMethod{
-			{goName: "AsyncValues", params: []ifaceParam{{goName: "Ctx", goType: "context.Context"}}, returnType: seq2(valType, "error")},
-		}
-		if len(typeStrs) >= 2 {
-			keyType := typeStrs[0]
-			out = append(out,
-				iterMethod{goName: "AsyncKeys", params: []ifaceParam{{goName: "Ctx", goType: "context.Context"}}, returnType: seq2(keyType, "error")},
-				iterMethod{goName: "AsyncEntries", params: []ifaceParam{{goName: "Ctx", goType: "context.Context"}}, returnType: seq2("Entry["+keyType+", "+valType+"]", "error")},
-			)
-		}
-		return out
+		return asyncIterMethods(typeStrs)
 
 	case webidl.IterMaplike:
 		if len(typeStrs) < 2 {
@@ -139,18 +136,18 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 		}
 		keyType, valType := typeStrs[0], typeStrs[1]
 		out := []iterMethod{
-			{jsName: "get", goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType},
-			{jsName: "has", goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool"},
-			{jsName: "keys", goName: "Keys", returnType: seq(keyType)},
-			{jsName: "values", goName: "Values", returnType: seq(valType)},
-			{jsName: "entries", goName: "Entries", returnType: seq2(keyType, valType)},
-			{jsName: "size", goName: "Size", returnType: "int"},
+			{jsName: "get", goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType, render: renderScalar},
+			{jsName: "has", goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool", render: renderScalar},
+			{jsName: "keys", goName: "Keys", returnType: iterSeq(keyType), render: renderSeq},
+			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
+			{jsName: "entries", goName: "Entries", returnType: iterSeq2(keyType, valType), render: renderSeq},
+			{jsName: "size", goName: "Size", returnType: "int", render: renderScalar},
 		}
 		if !it.Readonly {
 			out = append(out,
-				iterMethod{jsName: "set", goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}},
-				iterMethod{jsName: "delete", goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}},
-				iterMethod{jsName: "clear", goName: "Clear"},
+				iterMethod{jsName: "set", goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}, render: renderVoid},
+				iterMethod{jsName: "delete", goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}, render: renderVoid},
+				iterMethod{jsName: "clear", goName: "Clear", render: renderVoid},
 			)
 		}
 		return out
@@ -161,22 +158,47 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 			valType = typeStrs[0]
 		}
 		out := []iterMethod{
-			{jsName: "has", goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool"},
-			{jsName: "keys", goName: "Keys", returnType: seq(valType)},
-			{jsName: "values", goName: "Values", returnType: seq(valType)},
-			{jsName: "entries", goName: "Entries", returnType: seq2(valType, valType)},
-			{jsName: "size", goName: "Size", returnType: "int"},
+			{jsName: "has", goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool", render: renderScalar},
+			{jsName: "keys", goName: "Keys", returnType: iterSeq(valType), render: renderSeq},
+			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
+			{jsName: "entries", goName: "Entries", returnType: iterSeq2(valType, valType), render: renderSeq},
+			{jsName: "size", goName: "Size", returnType: "int", render: renderScalar},
 		}
 		if !it.Readonly {
 			out = append(out,
-				iterMethod{jsName: "add", goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}},
-				iterMethod{jsName: "delete", goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}},
-				iterMethod{jsName: "clear", goName: "Clear"},
+				iterMethod{jsName: "add", goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}, render: renderVoid},
+				iterMethod{jsName: "delete", goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}, render: renderVoid},
+				iterMethod{jsName: "clear", goName: "Clear", render: renderVoid},
 			)
 		}
 		return out
 	}
 	return nil
+}
+
+func iterSeq(elem string) string  { return "iter.Seq[" + elem + "]" }
+func iterSeq2(k, v string) string { return "iter.Seq2[" + k + ", " + v + "]" }
+
+// asyncIterMethods returns the async-iterable methods. These are layer-1 only —
+// the binding defers JS async iteration (CATH-66+) and skips this kind — so no
+// render kind / jsName is set.
+func asyncIterMethods(typeStrs []string) []iterMethod {
+	valType := "any"
+	if len(typeStrs) >= 1 {
+		valType = typeStrs[len(typeStrs)-1]
+	}
+	ctx := []ifaceParam{{goName: "Ctx", goType: "context.Context"}}
+	out := []iterMethod{
+		{goName: "AsyncValues", params: ctx, returnType: iterSeq2(valType, "error")},
+	}
+	if len(typeStrs) >= 2 {
+		keyType := typeStrs[0]
+		out = append(out,
+			iterMethod{goName: "AsyncKeys", params: ctx, returnType: iterSeq2(keyType, "error")},
+			iterMethod{goName: "AsyncEntries", params: ctx, returnType: iterSeq2("Entry["+keyType+", "+valType+"]", "error")},
+		)
+	}
+	return out
 }
 
 // resolveConstants returns the constants an interface exposes, in declaration
