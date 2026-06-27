@@ -321,3 +321,191 @@ func TestNoOpExtAttrs_Documented(t *testing.T) {
 		t.Errorf("[CEReactions] should be recognized with a searchable marker comment\n%s", src)
 	}
 }
+
+// ===========================================================================
+// CATH-65: adversary-gap tests (Step 0f)
+// ===========================================================================
+
+// Signed `long` is the 4th reflectable type → reflectGetInt32/reflectSetInt32.
+// Doubles as the name-lowercasing case: tabIndex → content attribute "tabindex".
+func TestReflect_SignedLong_MixedCaseLowercased(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Element", "", reflectAttr("tabIndex", "long", xa("Reflect")))
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, `b.ctx.reflectGetInt32(b.impl, "tabindex")`) {
+		t.Errorf("signed long [Reflect] must use reflectGetInt32 with the lowercased name\n%s", src)
+	}
+	if !strings.Contains(src, `b.ctx.reflectSetInt32(b.impl, "tabindex"`) {
+		t.Errorf("signed long [Reflect] must use reflectSetInt32\n%s", src)
+	}
+	if strings.Contains(src, `"tabIndex"`) {
+		t.Errorf("reflected content-attribute name must be ASCII-lowercased, not raw IDL\n%s", src)
+	}
+}
+
+// A readonly [Reflect] attr emits the getter only — no reflectSet*, still trimmed.
+func TestReflect_Readonly_GetterOnlyNoSetter(t *testing.T) {
+	t.Parallel()
+	a := attr("id", true, idlAttrType("DOMString"))
+	a.ExtAttrs = []*webidl.ExtAttr{xa("Reflect")}
+	def := regularMergedDef("Element", "", a)
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "id")`) {
+		t.Errorf("readonly [Reflect] must still emit the reflected getter\n%s", src)
+	}
+	if strings.Contains(src, "reflectSetString") {
+		t.Errorf("readonly [Reflect] must NOT emit a setter\n%s", src)
+	}
+}
+
+// Reflected attr on a child interface: trim + binding reflection + parent delegation coexist.
+func TestReflect_WithParent_TrimAndDelegate(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Element", "Node", reflectAttr("id", "DOMString", xa("Reflect")))
+	bsrc := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(bsrc, `b.ctx.reflectGetString(b.impl, "id")`) {
+		t.Errorf("child binding must still reflect\n%s", bsrc)
+	}
+	if !strings.Contains(bsrc, "parent *NodeBinding") || !strings.Contains(bsrc, "b.parent.Get(key)") {
+		t.Errorf("reflect must not break parent embed/delegation\n%s", bsrc)
+	}
+	isrc := ifaceSrc(t, def, codegen.NewDiagnostics())
+	if strings.Contains(isrc, "IdAttr()") {
+		t.Errorf("reflected attr on a child must still be trimmed from layer-1\n%s", isrc)
+	}
+}
+
+// The manifest carries the full {Name, Globals, New} payload, not a bare name list.
+func TestExposed_Manifest_FullShape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, "[Exposed=Window] interface Win { readonly attribute long x; };")
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	src := readGenerated(t, dir, "bindings.go")
+	for _, want := range []string{"type ExposedBinding struct", "Globals", "New func(", "New:"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("manifest must carry the full {Name, Globals, New} shape — missing %q\n%s", want, src)
+		}
+	}
+}
+
+// [SameObject] on a writable object attr is a spec error → no cache + diagnostic.
+func TestSameObject_OnWritable_Warns_NoCache(t *testing.T) {
+	t.Parallel()
+	diag := codegen.NewDiagnostics()
+	a := attr("frames", false, idlAttrType("Window"))
+	a.ExtAttrs = []*webidl.ExtAttr{xa("SameObject")}
+	def := regularMergedDef("Window", "", a)
+	src := bindingSrc(t, def, diag)
+	if strings.Contains(src, "sameObject") {
+		t.Errorf("[SameObject] on a writable attr must not emit a cache wrap\n%s", src)
+	}
+	if diag.IsClean() {
+		t.Errorf("[SameObject] on a writable attr should record a diagnostic")
+	}
+}
+
+// [Reflect] + [SameObject] on one attr: reflection wins (it's primitive); no Frankenstein wrap.
+func TestReflect_SameObject_Combo(t *testing.T) {
+	t.Parallel()
+	a := attr("id", false, idlAttrType("DOMString"))
+	a.ExtAttrs = []*webidl.ExtAttr{xa("Reflect"), xa("SameObject")}
+	def := regularMergedDef("Element", "", a)
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "id")`) {
+		t.Errorf("reflect must win over SameObject on a primitive reflected attr\n%s", src)
+	}
+	if strings.Contains(src, "sameObject") {
+		t.Errorf("must not wrap a reflected primitive getter in sameObject\n%s", src)
+	}
+}
+
+// A 0-arg overload arm: stop() vs stop(long).
+func TestOverload_ZeroArgArity(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Media", "",
+		op("stop", idlType("undefined")),
+		op("stop", idlType("undefined"), arg("at", "long")))
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, "b.impl.Stop0(") || !strings.Contains(src, "b.impl.Stop1(") {
+		t.Errorf("0-arg arity overload must route to Stop0/Stop1\n%s", src)
+	}
+}
+
+// A non-void overload's dispatched result must be wrapped in ToValue.
+func TestOverload_NonVoidReturn_Wrapped(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("List", "",
+		op("item", idlType("DOMString"), arg("i", "long")),
+		op("item", idlType("DOMString"), arg("i", "long"), arg("j", "long")))
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, "b.ctx.vm.ToValue(b.impl.Item1(") {
+		t.Errorf("non-void overload branch must wrap its result in ToValue\n%s", src)
+	}
+}
+
+// [Exposed=(Window,Worker)] list form including Window → still emitted (invariant guard
+// against over-filtering when the list-form RHS path lands).
+func TestExposed_ListForm_IncludesWindow_Emits(t *testing.T) {
+	t.Parallel()
+	def := ifaceExtAttrs(
+		regularMergedDef("Both", "", attr("x", true, idlAttrType("long"))),
+		&webidl.ExtAttr{Name: "Exposed", RHS: &webidl.ExtAttrRHS{
+			Type:   "identifier-list",
+			IsList: true,
+			Items: []*webidl.ExtAttrItem{
+				{Type: "identifier", Value: "Window"},
+				{Type: "identifier", Value: "Worker"},
+			},
+		}})
+	if decls := codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics()); len(decls) == 0 {
+		t.Error("[Exposed=(Window,Worker)] includes Window → must still emit a binding")
+	}
+}
+
+// [NewObject] and [Unscopable] are recognized and leave searchable markers.
+func TestNoOp_NewObject_And_Unscopable(t *testing.T) {
+	t.Parallel()
+	a := attr("createNode", true, idlAttrType("Node"))
+	a.ExtAttrs = []*webidl.ExtAttr{xa("NewObject")}
+	o := op("query", idlType("any"), arg("sel", "DOMString"))
+	o.ExtAttrs = []*webidl.ExtAttr{xa("Unscopable")}
+	def := regularMergedDef("Document", "", a, o)
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, "NewObject") {
+		t.Errorf("[NewObject] should leave a searchable marker\n%s", src)
+	}
+	if !strings.Contains(src, "Unscopable") {
+		t.Errorf("[Unscopable] should be recognized with a searchable marker\n%s", src)
+	}
+}
+
+// A [PutForwards] attr is readonly — it must NOT also emit a direct setter.
+func TestPutForwards_NoDirectSetter(t *testing.T) {
+	t.Parallel()
+	a := attr("location", true, idlAttrType("Location"))
+	a.ExtAttrs = []*webidl.ExtAttr{xav("PutForwards", "href")}
+	def := regularMergedDef("Document", "", a)
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, "b.impl.LocationAttr().SetHrefAttr(") {
+		t.Errorf("[PutForwards=href] must forward to .SetHrefAttr\n%s", src)
+	}
+	if strings.Contains(src, "b.impl.SetLocationAttr(") {
+		t.Errorf("[PutForwards] attr is readonly — must not emit a direct setter\n%s", src)
+	}
+}
+
+// Deferral guard: [Replaceable] must NOT emit replace-on-set in this PR (D8 defers it).
+// Flip this when [Replaceable] is implemented.
+func TestReplaceable_Deferred_NotEmitted(t *testing.T) {
+	t.Parallel()
+	a := attr("onhandler", false, idlAttrType("any"))
+	a.ExtAttrs = []*webidl.ExtAttr{xa("Replaceable")}
+	def := regularMergedDef("Window", "", a)
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if strings.Contains(src, "replaceProperty") {
+		t.Errorf("[Replaceable] is deferred — must not emit replace-on-set yet\n%s", src)
+	}
+}
