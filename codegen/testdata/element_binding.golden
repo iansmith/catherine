@@ -1,0 +1,49 @@
+package gen
+
+import (
+	"github.com/dop251/goja"
+)
+
+type ElementBinding struct {
+	ctx    *bindCtx
+	impl   Element
+	parent *NodeBinding
+}
+
+func (b *ElementBinding) Get(key string) goja.Value {
+	switch key {
+	case "id":
+		return b.ctx.vm.ToValue(b.impl.IdAttr())
+	case "className":
+		return b.ctx.vm.ToValue(b.impl.ClassNameAttr())
+	case "getAttribute":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.vm.ToValue(b.impl.GetAttribute(coerce[string](b.ctx, call.Argument(0))))
+		})
+	}
+	return b.parent.Get(key)
+}
+
+func (b *ElementBinding) Set(key string, val goja.Value) bool {
+	switch key {
+	case "className":
+		b.impl.SetClassNameAttr(coerce[string](b.ctx, val))
+		return true
+	}
+	return b.parent.Set(key, val)
+}
+
+func (b *ElementBinding) Has(key string) bool {
+	return key == "id" ||
+		key == "className" ||
+		key == "getAttribute" ||
+		b.parent.Has(key)
+}
+
+func (b *ElementBinding) Delete(key string) bool {
+	return b.parent.Delete(key)
+}
+
+func (b *ElementBinding) Keys() []string {
+	return append([]string{"id", "className", "getAttribute"}, b.parent.Keys()...)
+}
