@@ -678,6 +678,68 @@ func TestBinding_AllKinds_Coexist(t *testing.T) {
 	}
 }
 
+// --- iteration coverage (refactor-safety for resolveIterMethods) ------------
+
+func TestBinding_Maplike_RoutesMethods(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Map1", "", maplike("DOMString", "long", false))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	for _, want := range []string{
+		`case "get"`, "b.impl.Get(",
+		`case "has"`, "b.impl.Has(",
+		`case "keys"`, "b.impl.Keys()",
+		`case "values"`, "b.impl.Values()",
+		`case "entries"`, "b.impl.Entries()",
+		`case "size"`, "b.impl.Size()",
+		`case "set"`, "b.impl.Set(",
+		`case "delete"`, "b.impl.Delete(",
+		`case "clear"`, "b.impl.Clear()",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("maplike routing missing %q\n%s", want, src)
+		}
+	}
+}
+
+func TestBinding_ReadonlyMaplike_NoMutators(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Map1", "", maplike("DOMString", "long", true))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if !strings.Contains(src, `case "get"`) {
+		t.Errorf("readonly maplike must still expose readers\n%s", src)
+	}
+	for _, mutator := range []string{`case "set"`, `case "delete"`, `case "clear"`} {
+		if strings.Contains(src, mutator) {
+			t.Errorf("readonly maplike must not expose %q\n%s", mutator, src)
+		}
+	}
+}
+
+// Async iteration is deferred (CATH-66+): an async iterable produces a valid
+// binding with no iteration cases, no panic, no spurious AsyncValues dispatch.
+func TestBinding_AsyncIterable_Skipped(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Stream", "", asyncIterable("any"))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if strings.Contains(src, "AsyncValues") || strings.Contains(src, `case "values"`) {
+		t.Errorf("async iterable must be skipped by the binding (deferred)\n%s", src)
+	}
+	if !strings.Contains(src, "func (b *StreamBinding) Get(key string) goja.Value") {
+		t.Errorf("async-iterable interface still needs the DynamicObject method set\n%s", src)
+	}
+}
+
+// A setter with fewer than 2 args falls back to coerce[any] for the value.
+func TestBinding_IndexedSetter_OneArg_DefaultsAny(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Arr", "",
+		specialOp("setter", idlType("undefined"), arg("index", "unsigned long")))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+	if !strings.Contains(src, "b.impl.SetIndex(i, coerce[any](") {
+		t.Errorf("1-arg indexed setter must default the value coercion to any\n%s", src)
+	}
+}
+
 // --- golden-file snapshot (explicit acceptance criterion) -------------------
 
 func TestBinding_Golden_Element(t *testing.T) {

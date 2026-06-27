@@ -456,7 +456,7 @@ func addOpMethod(idecl *InterfaceDecl, op *webidl.Operation, tm typemap.Mapper, 
 	switch op.Special {
 	case "getter":
 		retType := buildReturnType(op.ReturnType, tm, diag, idlName, "getter")
-		addSpecialMethod(idecl, "Index", []ifaceParam{{goName: "I", goType: "uint32"}}, retType, seen, diag, idlName)
+		addSpecialMethod(idecl, idxGetterGoName, []ifaceParam{{goName: "I", goType: idxKeyGoType}}, retType, seen, diag, idlName)
 		return
 	case "setter":
 		valType := "any"
@@ -466,10 +466,10 @@ func addOpMethod(idecl *InterfaceDecl, op *webidl.Operation, tm typemap.Mapper, 
 				valType = gt.String()
 			}
 		}
-		addSpecialMethod(idecl, "SetIndex", []ifaceParam{{goName: "I", goType: "uint32"}, {goName: "V", goType: valType}}, "", seen, diag, idlName)
+		addSpecialMethod(idecl, idxSetterGoName, []ifaceParam{{goName: "I", goType: idxKeyGoType}, {goName: "V", goType: valType}}, "", seen, diag, idlName)
 		return
 	case "deleter":
-		addSpecialMethod(idecl, "Delete", []ifaceParam{{goName: "I", goType: "uint32"}}, "", seen, diag, idlName)
+		addSpecialMethod(idecl, idxDeleterGoName, []ifaceParam{{goName: "I", goType: idxKeyGoType}}, "", seen, diag, idlName)
 		return
 	}
 
@@ -506,100 +506,17 @@ func addSpecialMethod(idecl *InterfaceDecl, goName string, params []ifaceParam, 
 // ---------------------------------------------------------------------------
 
 func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
-	var typeStrs []string
-	for _, t := range it.Types {
-		gt, err := tm.MapType(t)
-		if err != nil {
-			diag.Add("error", fmt.Sprintf("interface %q: cannot map iterable type: %v", idlName, err))
-			typeStrs = append(typeStrs, "any")
-			continue
-		}
-		typeStrs = append(typeStrs, gt.String())
-	}
-
-	add := func(m ifaceMethod) {
+	// resolveIterMethods (members.go) is the single source of truth for the
+	// per-kind method set, readonly gating, and key/value arity — shared with the
+	// binding backend so the two cannot drift. Here we just declare each method,
+	// keeping the layer-1 first-wins collision rule.
+	for _, m := range resolveIterMethods(it, tm, diag, idlName) {
 		if seen[m.goName] {
 			diag.Add("warning", fmt.Sprintf("interface %q: iterable method %q conflicts with existing member — skipped", idlName, m.goName))
-			return
+			continue
 		}
 		seen[m.goName] = true
-		idecl.methods = append(idecl.methods, m)
-	}
-
-	switch it.Kind {
-	case webidl.IterIterable:
-		valType := "any"
-		keyType := "uint32"
-		if len(typeStrs) == 1 {
-			valType = typeStrs[0]
-		} else if len(typeStrs) >= 2 {
-			keyType = typeStrs[0]
-			valType = typeStrs[1]
-		}
-		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
-		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"})
-		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"})
-		add(ifaceMethod{goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}})
-
-	case webidl.IterAsyncIterable:
-		// value-only async iterable: Types has 1 entry
-		// pair async iterable: Types has 2 entries (key, value)
-		valType := "any"
-		if len(typeStrs) >= 1 {
-			valType = typeStrs[len(typeStrs)-1]
-		}
-		add(ifaceMethod{
-			goName:     "AsyncValues",
-			params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-			returnType: "iter.Seq2[" + valType + ", error]",
-		})
-		if len(typeStrs) >= 2 {
-			keyType := typeStrs[0]
-			add(ifaceMethod{
-				goName:     "AsyncKeys",
-				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-				returnType: "iter.Seq2[" + keyType + ", error]",
-			})
-			add(ifaceMethod{
-				goName:     "AsyncEntries",
-				params:     []ifaceParam{{goName: "Ctx", goType: "context.Context"}},
-				returnType: "iter.Seq2[Entry[" + keyType + ", " + valType + "], error]",
-			})
-		}
-
-	case webidl.IterMaplike:
-		if len(typeStrs) < 2 {
-			diag.Add("error", fmt.Sprintf("interface %q: maplike requires 2 type arguments, got %d", idlName, len(typeStrs)))
-			return
-		}
-		keyType, valType := typeStrs[0], typeStrs[1]
-		add(ifaceMethod{goName: "Get", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: valType})
-		add(ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "K", goType: keyType}}, returnType: "bool"})
-		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + keyType + "]"})
-		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
-		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + keyType + ", " + valType + "]"})
-		add(ifaceMethod{goName: "Size", returnType: "int"})
-		if !it.Readonly {
-			add(ifaceMethod{goName: "Set", params: []ifaceParam{{goName: "K", goType: keyType}, {goName: "V", goType: valType}}})
-			add(ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "K", goType: keyType}}})
-			add(ifaceMethod{goName: "Clear"})
-		}
-
-	case webidl.IterSetlike:
-		valType := "any"
-		if len(typeStrs) >= 1 {
-			valType = typeStrs[0]
-		}
-		add(ifaceMethod{goName: "Has", params: []ifaceParam{{goName: "V", goType: valType}}, returnType: "bool"})
-		add(ifaceMethod{goName: "Keys", returnType: "iter.Seq[" + valType + "]"})
-		add(ifaceMethod{goName: "Values", returnType: "iter.Seq[" + valType + "]"})
-		add(ifaceMethod{goName: "Entries", returnType: "iter.Seq2[" + valType + ", " + valType + "]"})
-		add(ifaceMethod{goName: "Size", returnType: "int"})
-		if !it.Readonly {
-			add(ifaceMethod{goName: "Add", params: []ifaceParam{{goName: "V", goType: valType}}})
-			add(ifaceMethod{goName: "Delete", params: []ifaceParam{{goName: "V", goType: valType}}})
-			add(ifaceMethod{goName: "Clear"})
-		}
+		idecl.methods = append(idecl.methods, ifaceMethod{goName: m.goName, params: m.params, returnType: m.returnType})
 	}
 }
 

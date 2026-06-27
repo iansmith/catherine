@@ -223,14 +223,14 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		b.stringifier = true
 		return
 	case "getter":
-		if !b.claimGoName("Index") {
+		if !b.claimGoName(idxGetterGoName) {
 			return
 		}
 		b.indexGetter = true
 		b.indexGetterRet = !isVoidReturn(op.ReturnType)
 		return
 	case "setter":
-		if !b.claimGoName("SetIndex") {
+		if !b.claimGoName(idxSetterGoName) {
 			return
 		}
 		b.indexSetter = true
@@ -240,7 +240,7 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 		}
 		return
 	case "deleter":
-		if !b.claimGoName("Delete") {
+		if !b.claimGoName(idxDeleterGoName) {
 			return
 		}
 		b.indexDeleter = true
@@ -274,54 +274,47 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 // INJECTED method (claimInjected): if its Go name was already claimed by a
 // declared member, it is dropped with a warning — exactly as iface.go does.
 func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
-	types := make([]string, 0, len(it.Types))
-	for _, t := range it.Types {
-		types = append(types, b.goType(t))
+	// Async iteration (Symbol.asyncIterator) is deferred (CATH-66+); the layer-1
+	// interface still gets AsyncValues/etc., but the binding has no JS surface
+	// for it yet.
+	if it.Kind == webidl.IterAsyncIterable {
+		return
 	}
-	keyType, valType := "uint32", "any"
-	if len(types) == 1 {
-		valType = types[0]
-	} else if len(types) >= 2 {
-		keyType, valType = types[0], types[1]
-	}
-
-	switch it.Kind {
-	case webidl.IterIterable:
-		b.addSeqMethod("values", "Values")
-		b.addSeqMethod("keys", "Keys")
-		b.addSeqMethod("entries", "Entries")
-		b.addInjected("forEach", "ForEach", "b.impl.ForEach(b.ctx.callbackFn(call.Argument(0)))", true)
-	case webidl.IterMaplike:
-		b.addInjected("get", "Get", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Get(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
-		b.addInjected("has", "Has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", keyType), false)
-		b.addSeqMethod("keys", "Keys")
-		b.addSeqMethod("values", "Values")
-		b.addSeqMethod("entries", "Entries")
-		b.addInjected("size", "Size", "b.ctx.vm.ToValue(b.impl.Size())", false)
-		if !it.Readonly {
-			b.addInjected("set", "Set", fmt.Sprintf("b.impl.Set(coerce[%s](b.ctx, call.Argument(0)), coerce[%s](b.ctx, call.Argument(1)))", keyType, valType), true)
-			b.addInjected("delete", "Delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", keyType), true)
-			b.addInjected("clear", "Clear", "b.impl.Clear()", true)
-		}
-	case webidl.IterSetlike:
-		b.addInjected("has", "Has", fmt.Sprintf("b.ctx.vm.ToValue(b.impl.Has(coerce[%s](b.ctx, call.Argument(0))))", valType), false)
-		b.addSeqMethod("keys", "Keys")
-		b.addSeqMethod("values", "Values")
-		b.addSeqMethod("entries", "Entries")
-		b.addInjected("size", "Size", "b.ctx.vm.ToValue(b.impl.Size())", false)
-		if !it.Readonly {
-			b.addInjected("add", "Add", fmt.Sprintf("b.impl.Add(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
-			b.addInjected("delete", "Delete", fmt.Sprintf("b.impl.Delete(coerce[%s](b.ctx, call.Argument(0)))", valType), true)
-			b.addInjected("clear", "Clear", "b.impl.Clear()", true)
-		}
-		// IterAsyncIterable: JS async iteration is deferred (CATH-66+).
+	// resolveIterMethods (members.go) is the shared source of truth for the
+	// method set / readonly gating / arity; here we only render each into a Get
+	// case and dispatch into the matching layer-1 method.
+	for _, m := range resolveIterMethods(it, b.tm, b.diag, b.idlName) {
+		b.addInjected(m.jsName, m.goName, iterCallBody(m), iterMethodVoid(m))
 	}
 }
 
-// addSeqMethod adds an injected iteration method whose layer-1 form returns an
-// iter.Seq, wrapped into a JS iterator by the runtime shim.
-func (b *bindingBuilder) addSeqMethod(jsName, goMethod string) {
-	b.addInjected(jsName, goMethod, fmt.Sprintf("b.ctx.wrapSeq(b.impl.%s())", goMethod), false)
+// iterCallBody renders the goja call body for an iteration method, dispatching
+// into the layer-1 method m.goName. Wrapping depends on the layer-1 shape:
+// iter.Seq returns go through the shim's wrapSeq; void mutators just call; the
+// forEach callback is adapted via the shim; everything else wraps with ToValue.
+func iterCallBody(m iterMethod) string {
+	if m.jsName == "forEach" {
+		return "b.impl.ForEach(b.ctx.callbackFn(call.Argument(0)))"
+	}
+	args := make([]string, len(m.params))
+	for i, p := range m.params {
+		args[i] = fmt.Sprintf("coerce[%s](b.ctx, call.Argument(%d))", p.goType, i)
+	}
+	call := fmt.Sprintf("b.impl.%s(%s)", m.goName, strings.Join(args, ", "))
+	switch {
+	case strings.HasPrefix(m.returnType, "iter.Seq"):
+		return fmt.Sprintf("b.ctx.wrapSeq(%s)", call)
+	case m.returnType == "":
+		return call // void mutator
+	default:
+		return fmt.Sprintf("b.ctx.vm.ToValue(%s)", call)
+	}
+}
+
+// iterMethodVoid reports whether the rendered closure body is a statement (void)
+// rather than an expression returning a goja.Value.
+func iterMethodVoid(m iterMethod) bool {
+	return m.jsName == "forEach" || m.returnType == ""
 }
 
 // addInjected claims an injected method by (jsName, goName) and, if it survives
@@ -428,11 +421,11 @@ func (d *bindingDecl) writeGet(sb *strings.Builder) {
 	}
 	if d.indexGet {
 		if d.indexGetRet {
-			sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\treturn b.ctx.vm.ToValue(b.impl.Index(i))\n\t}\n")
+			fmt.Fprintf(sb, "\tif i, ok := asArrayIndex(key); ok {\n\t\treturn b.ctx.vm.ToValue(b.impl.%s(i))\n\t}\n", idxGetterGoName)
 		} else {
 			// Void/undefined indexed getter: Index has no return — call it, then
 			// fall through to the no-value result rather than wrapping it.
-			sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.Index(i)\n\t\treturn goja.Undefined()\n\t}\n")
+			fmt.Fprintf(sb, "\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.%s(i)\n\t\treturn goja.Undefined()\n\t}\n", idxGetterGoName)
 		}
 	}
 	if d.parentName != "" {
@@ -450,7 +443,7 @@ func (d *bindingDecl) writeSet(sb *strings.Builder) {
 		sb.WriteString("\n\t}\n")
 	}
 	if d.indexSet {
-		fmt.Fprintf(sb, "\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.SetIndex(i, coerce[%s](b.ctx, val))\n\t\treturn true\n\t}\n", d.indexVal)
+		fmt.Fprintf(sb, "\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.%s(i, coerce[%s](b.ctx, val))\n\t\treturn true\n\t}\n", idxSetterGoName, d.indexVal)
 	}
 	if d.parentName != "" {
 		sb.WriteString("\treturn b.parent.Set(key, val)\n}\n\n")
@@ -482,7 +475,7 @@ func (d *bindingDecl) writeHas(sb *strings.Builder) {
 func (d *bindingDecl) writeDelete(sb *strings.Builder) {
 	fmt.Fprintf(sb, "func (%s) Delete(key string) bool {\n", d.recv())
 	if d.indexDel {
-		sb.WriteString("\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.Delete(i)\n\t\treturn true\n\t}\n")
+		fmt.Fprintf(sb, "\tif i, ok := asArrayIndex(key); ok {\n\t\tb.impl.%s(i)\n\t\treturn true\n\t}\n", idxDeleterGoName)
 	}
 	if d.parentName != "" {
 		sb.WriteString("\treturn b.parent.Delete(key)\n}\n\n")
