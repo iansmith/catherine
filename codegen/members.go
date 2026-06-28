@@ -491,6 +491,20 @@ func groupOverloads(members []webidl.Member) map[string][]*webidl.Operation {
 	return out
 }
 
+// overloadHasVariadicOrOptional reports whether any operation in an overload set
+// declares an optional or variadic argument — cases the arity-bucketed dispatch
+// only approximates.
+func overloadHasVariadicOrOptional(ops []*webidl.Operation) bool {
+	for _, op := range ops {
+		for _, arg := range op.Arguments {
+			if arg.Optional || arg.Variadic {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // resolveOverloads turns the overload set for one operation name into the
 // per-overload signatures both backends emit. Overloads are bucketed by arity
 // (ascending for deterministic output): each arity with a single signature gets
@@ -502,6 +516,16 @@ func groupOverloads(members []webidl.Member) map[string][]*webidl.Operation {
 // deferred (CATH-65 D6).
 func resolveOverloads(name string, ops []*webidl.Operation, tm typemap.Mapper, diag *Diagnostics, idlName string) []overloadSig {
 	base := opGoName(name)
+
+	// Dispatch is by declared argument count plus a coarse runtime kind at one
+	// position. optional/variadic arguments make the effective arity a range,
+	// which this arity-bucketed scheme does not model — surface it rather than
+	// silently mis-dispatching. (Full §3.2.11 effective-overload-set resolution,
+	// including a per-pair distinguishing position, is future work alongside the
+	// object-vs-object deferral — see F4 in the CATH-65 review.)
+	if overloadHasVariadicOrOptional(ops) {
+		diag.Add("warning", fmt.Sprintf("interface %q: overloaded operation %q has optional/variadic argument(s); dispatch is by declared argument count only — calls with an intermediate or extra argument count may not match", idlName, name))
+	}
 
 	byArity := map[int][]*webidl.Operation{}
 	for _, op := range ops {
@@ -523,7 +547,7 @@ func resolveOverloads(name string, ops []*webidl.Operation, tm typemap.Mapper, d
 		}
 		pos := distinguishingPos(group, tm)
 		if pos < 0 {
-			diag.Add("warning", fmt.Sprintf("interface %q: overloads of %q at %d argument(s) are not distinguishable by runtime type — keeping the first, dropping %d (object-vs-object dispatch deferred)", idlName, name, a, len(group)-1))
+			diag.Add("warning", fmt.Sprintf("interface %q: overloads of %q at %d argument(s) are not distinguishable by a single runtime argument kind — keeping the first, dropping %d (e.g. two object types, or two types sharing a coarse kind such as DOMString/USVString)", idlName, name, a, len(group)-1))
 			sigs = append(sigs, overloadSigFor(group[0], fmt.Sprintf("%s%d", base, a), a, -1, classObject, tm, diag, idlName, name))
 			continue
 		}

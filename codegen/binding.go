@@ -81,13 +81,15 @@ import (
 // interface (only regular interfaces get a binding accessor).
 func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []Decl {
 	// Standalone callers target the default global; GenerateBindings overrides it
-	// from Options.ExposureGlobal.
-	return newBindingDeclsFor(def, tm, diag, "Window")
+	// from Options.ExposureGlobal. exposed=nil → no parent-exposure filtering (a
+	// single interface carries no IR to check its parent against).
+	return newBindingDeclsFor(def, tm, diag, "Window", nil)
 }
 
 // newBindingDeclsFor is NewBindingDecls parameterized by the target [Exposed]
-// global. An interface not exposed to global gets no binding (CATH-65 D4).
-func newBindingDeclsFor(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics, global string) []Decl {
+// global and the set of exposed Go type names (for parent-delegation filtering;
+// nil disables it). An interface not exposed to global gets no binding (CATH-65 D4).
+func newBindingDeclsFor(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics, global string, exposed map[string]bool) []Decl {
 	if def == nil {
 		return nil
 	}
@@ -112,7 +114,18 @@ func newBindingDeclsFor(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnost
 		jsSeen:   make(map[string]bool),
 	}
 	if iface.Inheritance != "" {
-		b.parentName = IdentSanitize(iface.Inheritance)
+		parent := IdentSanitize(iface.Inheritance)
+		// Only delegate to the parent's binding when that binding is actually
+		// emitted. With [Exposed] filtering a child can be exposed while its parent
+		// is not (reachable only under spec-invalid IDL — GenerateBindings does not
+		// re-validate the exposure-subset rule); referencing an unemitted
+		// *ParentBinding would produce non-compiling output. exposed == nil
+		// (standalone NewBindingDecls) keeps the unconditional behavior.
+		if exposed == nil || exposed[parent] {
+			b.parentName = parent
+		} else {
+			diag.Add("warning", fmt.Sprintf("interface %q: parent %q is not exposed to %q; emitting %q without parent delegation", iface.Name, iface.Inheritance, global, b.typeName))
+		}
 	}
 
 	// Overloaded operations (same name, >1 signature) are emitted once as a
@@ -714,6 +727,24 @@ func (d *bindingDecl) writeKeys(sb *strings.Builder) {
 	}
 }
 
+// exposedTypeNames returns the sanitized Go type names of the regular interfaces
+// exposed to global, so a child binding never delegates to an unexposed (and thus
+// unemitted) parent's binding type. Uses a throwaway Diagnostics — the real emit
+// pass records any warnings.
+func exposedTypeNames(ir *webidl.IR, global string) map[string]bool {
+	out := map[string]bool{}
+	for _, def := range ir.All() {
+		iface, ok := def.Primary.(*webidl.Interface)
+		if !ok || iface.Variant != webidl.IfaceRegular || !hasAlnum(iface.Name) {
+			continue
+		}
+		if exposedTo(ParseExtAttrs(iface.ExtAttrs, NewDiagnostics()).ExposedScopes, global) {
+			out[IdentSanitize(iface.Name)] = true
+		}
+	}
+	return out
+}
+
 // GenerateBindings runs the binding backend over ir: for each regular interface
 // it emits a DynamicObject accessor and writes them all to bindings.go in
 // opts.OutputDir. It is independent of Generate (which emits the layer-1
@@ -735,11 +766,12 @@ func GenerateBindings(ir *webidl.IR, opts Options) error {
 	tm := typemap.Mapper{}
 	diag := NewDiagnostics()
 	global := opts.exposureGlobalOrDefault()
+	exposed := exposedTypeNames(ir, global)
 
 	var all []Decl
 	var manifest []manifestEntry
 	for _, def := range ir.All() {
-		decls := newBindingDeclsFor(def, tm, diag, global)
+		decls := newBindingDeclsFor(def, tm, diag, global, exposed)
 		if len(decls) == 0 {
 			continue
 		}

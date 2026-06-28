@@ -582,6 +582,42 @@ func TestOverload_TypeDiscrimination_DefaultArm(t *testing.T) {
 	}
 }
 
+// Regression (review F2): a child exposed to the target global whose parent is NOT
+// exposed must emit no parent delegation — otherwise it references a *ParentBinding
+// type that GenerateBindings never emits (non-compiling output).
+func TestExposed_UnexposedParent_NoDelegation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, "[Exposed=Worker] interface Node {}; "+
+		"[Exposed=Window] interface Element : Node { readonly attribute long x; };")
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	src := readGenerated(t, dir, "bindings.go")
+	if strings.Contains(src, "NodeBinding") {
+		t.Errorf("child must not reference the unexposed parent's NodeBinding\n%s", src)
+	}
+	if strings.Contains(src, "parent *") || strings.Contains(src, "b.parent.") {
+		t.Errorf("child of an unexposed parent must emit no parent delegation\n%s", src)
+	}
+}
+
+// Regression (review F4): an overload set with an optional/variadic argument warns
+// that dispatch is by declared argument count only (not silently approximate).
+func TestOverload_OptionalArg_Warns(t *testing.T) {
+	t.Parallel()
+	diag := codegen.NewDiagnostics()
+	optArg := arg("opt", "DOMString")
+	optArg.Optional = true
+	def := regularMergedDef("Thing", "",
+		op("f", idlType("undefined"), arg("a", "long")),
+		op("f", idlType("undefined"), arg("a", "long"), optArg))
+	_ = bindingSrc(t, def, diag)
+	if !strings.Contains(diag.Format(), "optional/variadic") {
+		t.Errorf("overload with an optional arg should warn about arity-only dispatch, got: %s", diag.Format())
+	}
+}
+
 func TestCATH65_Golden_FullBindings(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
