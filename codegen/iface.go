@@ -353,6 +353,12 @@ func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typema
 	seenMethods := make(map[string]bool)
 	var needsEntry bool
 
+	// Overloaded operations (same name, >1 signature) declare one method per
+	// overload (CATH-65 D6) instead of the first-wins drop; the binding dispatches
+	// into exactly these. Detect them up front so the walk skips the duplicates.
+	overloads := groupOverloads(def.Members)
+	emittedOverload := make(map[string]bool)
+
 	for _, mem := range def.Members {
 		switch m := mem.(type) {
 		case *webidl.Attribute:
@@ -363,6 +369,15 @@ func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typema
 		case *webidl.Operation:
 			if m.Special == "static" {
 				continue
+			}
+			if m.Special == "" && m.Name != "" {
+				if grp, multi := overloads[m.Name]; multi {
+					if !emittedOverload[m.Name] {
+						emittedOverload[m.Name] = true
+						addOverloadMethods(idecl, m.Name, grp, tm, diag, idlName, seenMethods)
+					}
+					continue
+				}
 			}
 			addOpMethod(idecl, m, tm, diag, idlName, seenMethods)
 		case *webidl.IterableLike:
@@ -394,6 +409,13 @@ func buildRegularDecls(iface *webidl.Interface, def *webidl.MergedDef, tm typema
 // ---------------------------------------------------------------------------
 
 func addAttrMethods(idecl *InterfaceDecl, attr *webidl.Attribute, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
+	// [Reflect] attrs are reflected end-to-end by the binding over the attribute
+	// store (CATH-65 D1), so layer-1 declares NO method for them. Trimmed via the
+	// shared reflectedAttr gate — the same predicate binding.go emits on — so the
+	// two backends agree on exactly which attrs have a layer-1 method.
+	if _, _, ok := reflectedAttr(attr, tm); ok {
+		return
+	}
 	goBaseName := IdentSanitize(attr.Name)
 	if !validGoIdentBase(goBaseName) {
 		diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier %q; skipping", idlName, attr.Name, goBaseName))
@@ -490,6 +512,20 @@ func addOpMethod(idecl *InterfaceDecl, op *webidl.Operation, tm typemap.Mapper, 
 	params := buildParams(op.Arguments, tm, diag, idlName)
 	retType := buildReturnType(op.ReturnType, tm, diag, idlName, op.Name)
 	idecl.methods = append(idecl.methods, ifaceMethod{goName: goName, params: params, returnType: retType})
+}
+
+// addOverloadMethods declares one layer-1 method per overload of an operation
+// name, using the shared resolveOverloads (members.go) so the binding dispatches
+// into exactly these methods (CATH-65 D6).
+func addOverloadMethods(idecl *InterfaceDecl, name string, ops []*webidl.Operation, tm typemap.Mapper, diag *Diagnostics, idlName string, seen map[string]bool) {
+	for _, s := range resolveOverloads(name, ops, tm, diag, idlName) {
+		if seen[s.goName] {
+			diag.Add("error", fmt.Sprintf("interface %q: overloaded operation %q → method %q dropped — name collision (first wins)", idlName, name, s.goName))
+			continue
+		}
+		seen[s.goName] = true
+		idecl.methods = append(idecl.methods, ifaceMethod{goName: s.goName, params: s.params, returnType: s.returnType})
+	}
 }
 
 func addSpecialMethod(idecl *InterfaceDecl, goName string, params []ifaceParam, retType string, seen map[string]bool, diag *Diagnostics, idlName string) {

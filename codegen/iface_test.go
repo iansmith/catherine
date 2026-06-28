@@ -325,21 +325,17 @@ func TestNewInterfaceDecls_OperationCollision(t *testing.T) {
 	diag := codegen.NewDiagnostics()
 	members := []webidl.Member{
 		op("doThing", idlType("undefined")),
-		op("doThing", idlType("long")), // same name → collision
+		op("doThing", idlType("long")), // same name, both zero-arg → indistinguishable
 	}
 	codegen.NewInterfaceDecls(regularMergedDef("Foo", "", members...), tm, diag)
-	if diag.IsClean() {
-		t.Error("op collision: expected error, got none")
-	}
-	found := false
-	for _, e := range diag.Errors() {
-		if strings.Contains(e.Message, "collision") || strings.Contains(e.Message, "dropped") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("op collision: no collision/dropped error in diagnostics: %s", diag.Format())
+	// CATH-65: same-name operations are overloads. A pair that cannot be told
+	// apart by runtime argument shape (here: both zero-arg) degrades to first-wins
+	// with a diagnostic rather than emitting an ambiguous dispatch. (The upstream
+	// WebIDL validator rejects overload-not-distinguishable as a hard error; the
+	// codegen degradation is a warning so GenerateBindings does not hard-fail on
+	// the deferred object-vs-object case.)
+	if !strings.Contains(diag.Format(), "not distinguishable") {
+		t.Errorf("indistinguishable overloads should record a diagnostic: %s", diag.Format())
 	}
 }
 

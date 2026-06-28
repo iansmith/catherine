@@ -204,8 +204,8 @@ func TestReflect_NonReflectableType_KeepsLayer1(t *testing.T) {
 	if !strings.Contains(bsrc, "b.impl.BodyAttr()") {
 		t.Errorf("non-reflectable [Reflect] must fall back to the layer-1 getter\n%s", bsrc)
 	}
-	if diag.IsClean() {
-		t.Errorf("non-reflectable [Reflect] should record a diagnostic")
+	if !strings.Contains(diag.Format(), "Reflect") {
+		t.Errorf("non-reflectable [Reflect] should record a diagnostic, got: %s", diag.Format())
 	}
 	isrc := ifaceSrc(t, def, codegen.NewDiagnostics())
 	if !strings.Contains(isrc, "BodyAttr()") {
@@ -239,8 +239,8 @@ func TestSameObject_OnPrimitive_Warns_NoCache(t *testing.T) {
 	if strings.Contains(src, "sameObject") {
 		t.Errorf("[SameObject] on a primitive attr must not emit a cache wrap\n%s", src)
 	}
-	if diag.IsClean() {
-		t.Errorf("[SameObject] on a primitive attr should record a diagnostic")
+	if !strings.Contains(diag.Format(), "SameObject") {
+		t.Errorf("[SameObject] on a primitive attr should record a diagnostic, got: %s", diag.Format())
 	}
 }
 
@@ -338,8 +338,10 @@ func TestReflect_SignedLong_MixedCaseLowercased(t *testing.T) {
 	if !strings.Contains(src, `b.ctx.reflectSetInt32(b.impl, "tabindex"`) {
 		t.Errorf("signed long [Reflect] must use reflectSetInt32\n%s", src)
 	}
-	if strings.Contains(src, `"tabIndex"`) {
-		t.Errorf("reflected content-attribute name must be ASCII-lowercased, not raw IDL\n%s", src)
+	// The JS property key stays "tabIndex"; only the reflect shim call uses the
+	// ASCII-lowercased content-attribute name.
+	if strings.Contains(src, `reflectGetInt32(b.impl, "tabIndex")`) {
+		t.Errorf("reflect call must use the lowercased content name, not the raw IDL name\n%s", src)
 	}
 }
 
@@ -384,7 +386,7 @@ func TestExposed_Manifest_FullShape(t *testing.T) {
 		t.Fatalf("GenerateBindings: %v", err)
 	}
 	src := readGenerated(t, dir, "bindings.go")
-	for _, want := range []string{"type ExposedBinding struct", "Globals", "New func(", "New:"} {
+	for _, want := range []string{"type ExposedBinding struct", "Globals", "func(ctx *bindCtx, impl any) goja.Value", "New:"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("manifest must carry the full {Name, Globals, New} shape — missing %q\n%s", want, src)
 		}
@@ -402,8 +404,8 @@ func TestSameObject_OnWritable_Warns_NoCache(t *testing.T) {
 	if strings.Contains(src, "sameObject") {
 		t.Errorf("[SameObject] on a writable attr must not emit a cache wrap\n%s", src)
 	}
-	if diag.IsClean() {
-		t.Errorf("[SameObject] on a writable attr should record a diagnostic")
+	if !strings.Contains(diag.Format(), "SameObject") {
+		t.Errorf("[SameObject] on a writable attr should record a diagnostic, got: %s", diag.Format())
 	}
 }
 
@@ -508,4 +510,42 @@ func TestReplaceable_Deferred_NotEmitted(t *testing.T) {
 	if strings.Contains(src, "replaceProperty") {
 		t.Errorf("[Replaceable] is deferred — must not emit replace-on-set yet\n%s", src)
 	}
+}
+
+// ===========================================================================
+// CATH-65: whole-file golden — pins exposure exclusion, the registry manifest,
+// reflection (string/bool/uint32 + renamed), [SameObject], and overload dispatch
+// (arg-count + type) in one bindings.go. Satisfies the AC's golden requirement.
+// ===========================================================================
+
+const cath65GoldenIDL = `
+interface Node {};
+
+[Exposed=Window]
+interface Element : Node {
+  [Reflect] attribute DOMString id;
+  [Reflect] attribute boolean hidden;
+  [Reflect=class] attribute DOMString className;
+  [Reflect] attribute unsigned long tabIndex;
+  [SameObject] readonly attribute Node firstChild;
+  undefined append(Node node);
+  undefined append(DOMString text);
+  undefined resize(unsigned long w, unsigned long h);
+  undefined resize(unsigned long w, unsigned long h, unsigned long d);
+};
+
+[Exposed=Worker]
+interface WorkerOnly {
+  readonly attribute long count;
+};
+`
+
+func TestCATH65_Golden_FullBindings(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ir := mustIR(t, cath65GoldenIDL)
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	assertGolden(t, "cath65_full_binding.golden", readGenerated(t, dir, "bindings.go"))
 }

@@ -1,0 +1,131 @@
+package gen
+
+import (
+	"github.com/dop251/goja"
+)
+
+type ElementBinding struct {
+	ctx    *bindCtx
+	impl   Element
+	parent *NodeBinding
+}
+
+func (b *ElementBinding) Get(key string) goja.Value {
+	switch key {
+	case "id":
+		return b.ctx.vm.ToValue(b.ctx.reflectGetString(b.impl, "id"))
+	case "hidden":
+		return b.ctx.vm.ToValue(b.ctx.reflectGetBool(b.impl, "hidden"))
+	case "className":
+		return b.ctx.vm.ToValue(b.ctx.reflectGetString(b.impl, "class"))
+	case "tabIndex":
+		return b.ctx.vm.ToValue(b.ctx.reflectGetUint32(b.impl, "tabindex"))
+	case "firstChild":
+		return b.ctx.sameObject(b.impl, "firstChild", func() goja.Value { return b.ctx.vm.ToValue(b.impl.FirstChildAttr()) })
+	case "append":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			switch len(call.Arguments) {
+			case 1:
+				switch b.ctx.argKind(call.Argument(0)) {
+				case KindObject:
+					b.impl.Append1Node(coerce[any](b.ctx, call.Argument(0)))
+					return goja.Undefined()
+				case KindString:
+					b.impl.Append1String(coerce[string](b.ctx, call.Argument(0)))
+					return goja.Undefined()
+				}
+			}
+			return goja.Undefined()
+		})
+	case "resize":
+		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			switch len(call.Arguments) {
+			case 2:
+				b.impl.Resize2(coerce[uint32](b.ctx, call.Argument(0)), coerce[uint32](b.ctx, call.Argument(1)))
+				return goja.Undefined()
+			case 3:
+				b.impl.Resize3(coerce[uint32](b.ctx, call.Argument(0)), coerce[uint32](b.ctx, call.Argument(1)), coerce[uint32](b.ctx, call.Argument(2)))
+				return goja.Undefined()
+			}
+			return goja.Undefined()
+		})
+	}
+	return b.parent.Get(key)
+}
+
+func (b *ElementBinding) Set(key string, val goja.Value) bool {
+	switch key {
+	case "id":
+		b.ctx.reflectSetString(b.impl, "id", coerce[string](b.ctx, val))
+		return true
+	case "hidden":
+		b.ctx.reflectSetBool(b.impl, "hidden", coerce[bool](b.ctx, val))
+		return true
+	case "className":
+		b.ctx.reflectSetString(b.impl, "class", coerce[string](b.ctx, val))
+		return true
+	case "tabIndex":
+		b.ctx.reflectSetUint32(b.impl, "tabindex", coerce[uint32](b.ctx, val))
+		return true
+	}
+	return b.parent.Set(key, val)
+}
+
+func (b *ElementBinding) Has(key string) bool {
+	return key == "id" ||
+		key == "hidden" ||
+		key == "className" ||
+		key == "tabIndex" ||
+		key == "firstChild" ||
+		key == "append" ||
+		key == "resize" ||
+		b.parent.Has(key)
+}
+
+func (b *ElementBinding) Delete(key string) bool {
+	return b.parent.Delete(key)
+}
+
+func (b *ElementBinding) Keys() []string {
+	return append([]string{"id", "hidden", "className", "tabIndex", "firstChild", "append", "resize"}, b.parent.Keys()...)
+}
+
+type NodeBinding struct {
+	ctx  *bindCtx
+	impl Node
+}
+
+func (b *NodeBinding) Get(key string) goja.Value {
+	return goja.Undefined()
+}
+
+func (b *NodeBinding) Set(key string, val goja.Value) bool {
+	return false
+}
+
+func (b *NodeBinding) Has(key string) bool {
+	return false
+}
+
+func (b *NodeBinding) Delete(key string) bool {
+	return false
+}
+
+func (b *NodeBinding) Keys() []string {
+	return []string{}
+}
+
+type ExposedBinding struct {
+	Name    string
+	Globals []string
+	New     func(ctx *bindCtx, impl any) goja.Value
+}
+
+var ExposedBindings = []ExposedBinding{
+	{Name: "Element", Globals: []string{"Window"}, New: func(ctx *bindCtx, impl any) goja.Value {
+		return ctx.vm.NewDynamicObject(&ElementBinding{ctx: ctx, impl: impl.(Element)})
+	}},
+	{Name: "Node", Globals: []string{"*"}, New: func(ctx *bindCtx, impl any) goja.Value {
+		return ctx.vm.NewDynamicObject(&NodeBinding{ctx: ctx, impl: impl.(Node)})
+	}},
+}
