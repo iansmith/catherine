@@ -253,20 +253,27 @@ func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
 	if a.Special == "static" {
 		return
 	}
-	if a.Special == "stringifier" {
-		b.stringifier = true
-	}
-	if !validGoIdentBase(IdentSanitize(a.Name)) {
-		b.diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier; skipping", b.idlName, a.Name))
-		return
-	}
 
 	// [Reflect] (CATH-65 D1/D3): read/write the content attribute directly via
 	// the CATH-66 reflect shim, bypassing layer-1. iface.go trims the layer-1
 	// method for the same attrs (gated on the shared reflectedAttr predicate), so
 	// there is no Go method name to claim — only the JS switch key.
+	//
+	// This MUST run before the stringifier flag below: iface.go reflect-trims the
+	// attr before its own stringifier branch, so a reflected `stringifier
+	// attribute` has no layer-1 String(). Were we to set b.stringifier here, the
+	// binding would emit a toString dispatching into a b.impl.String() the
+	// interface never declares — a cross-backend divergence.
 	if domName, kind, ok := reflectedAttr(a, b.tm); ok {
 		b.addReflectedAttr(a, domName, kind)
+		return
+	}
+
+	if a.Special == "stringifier" {
+		b.stringifier = true
+	}
+	if !validGoIdentBase(IdentSanitize(a.Name)) {
+		b.diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier; skipping", b.idlName, a.Name))
 		return
 	}
 
@@ -419,6 +426,12 @@ func (b *bindingBuilder) addOverloadedOperation(name string, ops []*webidl.Opera
 			fmt.Fprintf(&body, "case %s:\n", s.class.kindConst())
 			body.WriteString(overloadBranch(s))
 		}
+		// Any argument kind not matched above — notably KindNull / KindUndefined —
+		// routes to the last overload so a valid call still dispatches instead of
+		// silently returning undefined. Precise WebIDL null/undefined coercion
+		// (prefer the nullable overload) is deferred to the CATH-66 runtime.
+		body.WriteString("default:\n")
+		body.WriteString(overloadBranch(group[len(group)-1]))
 		body.WriteString("}\n")
 	}
 	body.WriteString("}\nreturn goja.Undefined()")

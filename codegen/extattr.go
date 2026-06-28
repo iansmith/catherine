@@ -93,7 +93,11 @@ func ParseExtAttrs(attrs []*webidl.ExtAttr, diag *Diagnostics) ExtAttrSet {
 			}
 		case "Reflect":
 			s.ReflectPresent = true
-			s.ReflectAttr = identRHS(a, diag)
+			// Mirror RuntimeEnabled/PutForwards: a no-RHS (or wrong-RHS) occurrence
+			// leaves a previously-set name intact rather than clobbering it to "".
+			if v := identRHS(a, diag); v != "" {
+				s.ReflectAttr = v
+			}
 		default:
 			s.UnknownAttrs = append(s.UnknownAttrs, a.Name)
 			diag.Add("warning", fmt.Sprintf("unknown extended attribute %q — ignored", a.Name))

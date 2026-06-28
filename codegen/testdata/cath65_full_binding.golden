@@ -33,6 +33,9 @@ func (b *ElementBinding) Get(key string) goja.Value {
 				case KindString:
 					b.impl.Append1String(coerce[string](b.ctx, call.Argument(0)))
 					return goja.Undefined()
+				default:
+					b.impl.Append1String(coerce[string](b.ctx, call.Argument(0)))
+					return goja.Undefined()
 				}
 			}
 			return goja.Undefined()

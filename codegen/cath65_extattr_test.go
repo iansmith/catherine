@@ -540,6 +540,48 @@ interface WorkerOnly {
 };
 `
 
+// Regression (review F1): a [Reflect] stringifier attribute must be reflected and
+// fully trimmed from BOTH backends — the binding must NOT register a toString that
+// dispatches into a b.impl.String() the trimmed layer-1 interface never declares.
+func TestReflect_Stringifier_NoCrossBackendStringMethod(t *testing.T) {
+	t.Parallel()
+	a := attr("href", false, idlAttrType("DOMString"))
+	a.Special = "stringifier"
+	a.ExtAttrs = []*webidl.ExtAttr{xa("Reflect")}
+	def := regularMergedDef("Link", "", a)
+
+	bsrc := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(bsrc, `b.ctx.reflectGetString(b.impl, "href")`) {
+		t.Errorf("reflected stringifier attr must still reflect\n%s", bsrc)
+	}
+	if strings.Contains(bsrc, "b.impl.String()") || strings.Contains(bsrc, `case "toString"`) {
+		t.Errorf("a reflected attr must not register a stringifier toString (layer-1 has no String())\n%s", bsrc)
+	}
+	isrc := ifaceSrc(t, def, codegen.NewDiagnostics())
+	if strings.Contains(isrc, "String()") || strings.Contains(isrc, "HrefAttr") {
+		t.Errorf("reflected stringifier attr must be fully trimmed from layer-1\n%s", isrc)
+	}
+}
+
+// Regression (review F3): a same-arity type-discriminated overload must emit a
+// default arm so a null/undefined argument (KindNull/KindUndefined — no case)
+// still dispatches instead of silently returning undefined.
+func TestOverload_TypeDiscrimination_DefaultArm(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("Bag", "",
+		op("add", idlType("undefined"), arg("item", "DOMString")),
+		op("add", idlType("undefined"), arg("item", "Node")))
+	src := bindingSrc(t, def, codegen.NewDiagnostics())
+	if !strings.Contains(src, "default:") {
+		t.Errorf("type-discriminated overload needs a default arm for unmatched arg kinds\n%s", src)
+	}
+	// The default routes to the last overload (Add1Node), so it appears in both the
+	// KindObject case and the default arm.
+	if strings.Count(src, "b.impl.Add1Node(") < 2 {
+		t.Errorf("default arm should route to the last overload (Add1Node)\n%s", src)
+	}
+}
+
 func TestCATH65_Golden_FullBindings(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
