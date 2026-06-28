@@ -39,6 +39,38 @@ import (
 //	func (ctx *bindCtx) wrapSeq(any) goja.Value          // iter.Seq → JS iterator
 //	func (ctx *bindCtx) callbackFn(v goja.Value) func(...) // JS fn → Go callback
 //
+// CATH-65 adds the following to the contract:
+//
+//	// [Reflect] — read/write a content attribute on the impl's attribute store.
+//	// impl is passed as `any` (the layer-1 method is trimmed, so no typed
+//	// accessor exists); CATH-66 type-asserts it to the attribute-store interface.
+//	// Integer getters default to 0 when the attribute is absent/unparseable.
+//	func (ctx *bindCtx) reflectGetString(impl any, name string) string
+//	func (ctx *bindCtx) reflectSetString(impl any, name, v string)
+//	func (ctx *bindCtx) reflectGetBool(impl any, name string) bool       // presence-based
+//	func (ctx *bindCtx) reflectSetBool(impl any, name string, v bool)
+//	func (ctx *bindCtx) reflectGetInt32(impl any, name string) int32
+//	func (ctx *bindCtx) reflectSetInt32(impl any, name string, v int32)
+//	func (ctx *bindCtx) reflectGetUint32(impl any, name string) uint32
+//	func (ctx *bindCtx) reflectSetUint32(impl any, name string, v uint32)
+//
+//	// [SameObject] — memoize an attribute's object so repeated reads are ===.
+//	func (ctx *bindCtx) sameObject(owner any, key string, compute func() goja.Value) goja.Value
+//
+//	// Overload dispatch — coarse runtime kind of a JS argument.
+//	type Kind int
+//	const ( KindUndefined Kind = iota; KindNull; KindBoolean; KindNumber; KindString; KindObject )
+//	func (ctx *bindCtx) argKind(v goja.Value) Kind
+//
+// GenerateBindings additionally emits an exposure registry:
+//
+//	type ExposedBinding struct {
+//		Name    string
+//		Globals []string
+//		New     func(ctx *bindCtx, impl any) goja.Value // wraps a layer-1 impl
+//	}
+//	var ExposedBindings []ExposedBinding
+//
 // Because of these references the output is gofmt-valid but does not fully
 // compile standalone until the CATH-66 shim lands. goja itself is intentionally
 // NOT a dependency of this module — the generator emits source text; the
@@ -48,6 +80,16 @@ import (
 // def. Returns nil for a nil def, a non-interface primary, or a mixin/callback
 // interface (only regular interfaces get a binding accessor).
 func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics) []Decl {
+	// Standalone callers target the default global; GenerateBindings overrides it
+	// from Options.ExposureGlobal. exposed=nil → no parent-exposure filtering (a
+	// single interface carries no IR to check its parent against).
+	return newBindingDeclsFor(def, tm, diag, "Window", nil)
+}
+
+// newBindingDeclsFor is NewBindingDecls parameterized by the target [Exposed]
+// global and the set of exposed Go type names (for parent-delegation filtering;
+// nil disables it). An interface not exposed to global gets no binding (CATH-65 D4).
+func newBindingDeclsFor(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics, global string, exposed map[string]bool) []Decl {
 	if def == nil {
 		return nil
 	}
@@ -57,6 +99,9 @@ func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics
 	}
 	if !hasAlnum(iface.Name) {
 		diag.Add("error", fmt.Sprintf("interface name %q has no letter or digit content; cannot produce a binding type", iface.Name))
+		return nil
+	}
+	if !exposedTo(ParseExtAttrs(iface.ExtAttrs, diag).ExposedScopes, global) {
 		return nil
 	}
 
@@ -69,9 +114,35 @@ func NewBindingDecls(def *webidl.MergedDef, tm typemap.Mapper, diag *Diagnostics
 		jsSeen:   make(map[string]bool),
 	}
 	if iface.Inheritance != "" {
-		b.parentName = IdentSanitize(iface.Inheritance)
+		parent := IdentSanitize(iface.Inheritance)
+		// Only delegate to the parent's binding when that binding is actually
+		// emitted. With [Exposed] filtering a child can be exposed while its parent
+		// is not (reachable only under spec-invalid IDL — GenerateBindings does not
+		// re-validate the exposure-subset rule); referencing an unemitted
+		// *ParentBinding would produce non-compiling output. exposed == nil
+		// (standalone NewBindingDecls) keeps the unconditional behavior.
+		if exposed == nil || exposed[parent] {
+			b.parentName = parent
+		} else {
+			diag.Add("warning", fmt.Sprintf("interface %q: parent %q is not exposed to %q; emitting %q without parent delegation", iface.Name, iface.Inheritance, global, b.typeName))
+		}
 	}
+
+	// Overloaded operations (same name, >1 signature) are emitted once as a
+	// single arg-shape dispatcher rather than dropped first-wins; detect them up
+	// front so the member walk skips the duplicates.
+	overloads := groupOverloads(def.Members)
+	emittedOverload := make(map[string]bool)
 	for _, mem := range def.Members {
+		if op, ok := mem.(*webidl.Operation); ok && op.Special == "" && op.Name != "" {
+			if grp, multi := overloads[op.Name]; multi {
+				if !emittedOverload[op.Name] {
+					emittedOverload[op.Name] = true
+					b.addOverloadedOperation(op.Name, grp)
+				}
+				continue
+			}
+		}
 		b.add(mem)
 	}
 	b.addConstants(def.Members)
@@ -195,6 +266,22 @@ func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
 	if a.Special == "static" {
 		return
 	}
+
+	// [Reflect] (CATH-65 D1/D3): read/write the content attribute directly via
+	// the CATH-66 reflect shim, bypassing layer-1. iface.go trims the layer-1
+	// method for the same attrs (gated on the shared reflectedAttr predicate), so
+	// there is no Go method name to claim — only the JS switch key.
+	//
+	// This MUST run before the stringifier flag below: iface.go reflect-trims the
+	// attr before its own stringifier branch, so a reflected `stringifier
+	// attribute` has no layer-1 String(). Were we to set b.stringifier here, the
+	// binding would emit a toString dispatching into a b.impl.String() the
+	// interface never declares — a cross-backend divergence.
+	if domName, kind, ok := reflectedAttr(a, b.tm); ok {
+		b.addReflectedAttr(a, domName, kind)
+		return
+	}
+
 	if a.Special == "stringifier" {
 		b.stringifier = true
 	}
@@ -202,17 +289,84 @@ func (b *bindingBuilder) addAttribute(a *webidl.Attribute) {
 		b.diag.Add("error", fmt.Sprintf("interface %q: attribute %q sanitizes to invalid Go identifier; skipping", b.idlName, a.Name))
 		return
 	}
+
+	set := ParseExtAttrs(a.ExtAttrs, b.diag)
+	if set.ReflectPresent {
+		b.diag.Add("warning", fmt.Sprintf("interface %q: [Reflect] on attribute %q of non-reflectable type — keeping the layer-1 accessor", b.idlName, a.Name))
+	}
+
 	getter := attrGetterName(a.Name)
 	if !b.claimMethod(a.Name, getter) {
 		return
 	}
-	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(b.impl.%s())", a.Name, getter))
+
+	// Getter — wrapped in the identity cache for [SameObject] (CATH-65 D7), which
+	// is only meaningful on a readonly object-typed attribute; otherwise the
+	// directive is dropped with a diagnostic.
+	getExpr := fmt.Sprintf("b.ctx.vm.ToValue(b.impl.%s())", getter)
+	if set.SameObject {
+		if a.Readonly && isObjectType(a.IDLType, b.tm) {
+			getExpr = fmt.Sprintf("b.ctx.sameObject(b.impl, %q, func() goja.Value { return b.ctx.vm.ToValue(b.impl.%s()) })", a.Name, getter)
+		} else {
+			b.diag.Add("warning", fmt.Sprintf("interface %q: [SameObject] on attribute %q ignored — requires a readonly object-typed attribute", b.idlName, a.Name))
+		}
+	}
+	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:%s\n\t\treturn %s", a.Name, noopMarker(set), getExpr))
 	b.keyNames = append(b.keyNames, a.Name)
+
 	if a.Readonly {
+		// [PutForwards=x] (CATH-65 D8): assignment forwards to .x on the returned
+		// object. The target attribute's type is not resolvable here without a
+		// cross-interface lookup, so coerce to string — the common URL/stringifier
+		// case; non-string PutForwards targets are future work.
+		if set.PutForwards != "" {
+			b.setCases = append(b.setCases, fmt.Sprintf("\tcase %q:\n\t\tb.impl.%s().%s(coerce[string](b.ctx, val))\n\t\treturn true", a.Name, getter, attrSetterName(set.PutForwards)))
+		}
+		// [Replaceable] (CATH-65 D8): deferred — own-data-property-on-assign needs
+		// the CATH-66 runtime (a replaceProperty shim). Diagnostic marker only.
+		if set.Replaceable {
+			b.diag.Add("warning", fmt.Sprintf("interface %q: [Replaceable] on attribute %q not implemented — deferred (see CATH-65)", b.idlName, a.Name))
+		}
 		return
 	}
 	typeStr := b.goType(a.IDLType)
 	b.setCases = append(b.setCases, fmt.Sprintf("\tcase %q:\n\t\tb.impl.%s(coerce[%s](b.ctx, val))\n\t\treturn true", a.Name, attrSetterName(a.Name), typeStr))
+}
+
+// addReflectedAttr emits a Get (and, for writable attrs, Set) case that routes
+// through the CATH-66 reflect shim instead of any layer-1 method.
+func (b *bindingBuilder) addReflectedAttr(a *webidl.Attribute, domName string, kind reflectKind) {
+	if b.jsSeen[a.Name] {
+		b.diag.Add("error", fmt.Sprintf("interface %q: reflected attribute %q dropped — collision (first wins)", b.idlName, a.Name))
+		return
+	}
+	b.jsSeen[a.Name] = true
+	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(b.ctx.reflectGet%s(b.impl, %q))", a.Name, kind.shimSuffix(), domName))
+	b.keyNames = append(b.keyNames, a.Name)
+	if !a.Readonly {
+		b.setCases = append(b.setCases, fmt.Sprintf("\tcase %q:\n\t\tb.ctx.reflectSet%s(b.impl, %q, coerce[%s](b.ctx, val))\n\t\treturn true", a.Name, kind.shimSuffix(), domName, kind.goType()))
+	}
+}
+
+// noopMarker returns a trailing line-comment naming the recognized-but-no-op
+// extended attributes present (CEReactions/NewObject/Unscopable), or "" if none.
+// They have no binding behavior in CATH-65 (D9) — the comment keeps them
+// greppable in the generated source.
+func noopMarker(set ExtAttrSet) string {
+	var names []string
+	if set.CEReactions {
+		names = append(names, "[CEReactions]")
+	}
+	if set.NewObject {
+		names = append(names, "[NewObject]")
+	}
+	if set.Unscopable {
+		names = append(names, "[Unscopable]")
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return " // " + strings.Join(names, " ") + " recognized, not implemented (CATH-65)"
 }
 
 func (b *bindingBuilder) addOperation(op *webidl.Operation) {
@@ -231,16 +385,87 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 	if !b.claimMethod(op.Name, goName) {
 		return
 	}
+	marker := noopMarker(ParseExtAttrs(op.ExtAttrs, b.diag))
 	args := make([]string, 0, len(op.Arguments))
 	for i, a := range op.Arguments {
 		args = append(args, fmt.Sprintf("coerce[%s](b.ctx, call.Argument(%d))", b.goType(a.IDLType), i))
 	}
 	call := fmt.Sprintf("b.impl.%s(%s)", goName, strings.Join(args, ", "))
 	if isVoidReturn(op.ReturnType) {
-		b.emitCallable(op.Name, call, true)
+		b.emitCallable(op.Name, call, true, marker)
 	} else {
-		b.emitCallable(op.Name, fmt.Sprintf("b.ctx.vm.ToValue(%s)", call), false)
+		b.emitCallable(op.Name, fmt.Sprintf("b.ctx.vm.ToValue(%s)", call), false, marker)
 	}
+}
+
+// addOverloadedOperation emits a single arg-shape dispatcher for an operation
+// name that has multiple signatures (CATH-65 D6). resolveOverloads (members.go)
+// is the shared source of truth for the per-overload Go method names and the
+// dispatch keys, so the layer-1 methods iface.go declares and the calls emitted
+// here cannot drift.
+func (b *bindingBuilder) addOverloadedOperation(name string, ops []*webidl.Operation) {
+	if !validGoIdentBase(opGoName(name)) {
+		b.diag.Add("error", fmt.Sprintf("interface %q: operation %q sanitizes to invalid Go identifier; skipping", b.idlName, name))
+		return
+	}
+	if b.jsSeen[name] {
+		b.diag.Add("error", fmt.Sprintf("interface %q: overloaded operation %q dropped — collision (first wins)", b.idlName, name))
+		return
+	}
+	b.jsSeen[name] = true
+
+	sigs := resolveOverloads(name, ops, b.tm, b.diag, b.idlName)
+	var arities []int
+	byArity := map[int][]overloadSig{}
+	for _, s := range sigs {
+		b.goSeen[s.goName] = true // mirror the layer-1 methods iface.go will declare
+		if _, ok := byArity[s.arity]; !ok {
+			arities = append(arities, s.arity)
+		}
+		byArity[s.arity] = append(byArity[s.arity], s)
+	}
+
+	var body strings.Builder
+	body.WriteString("switch len(call.Arguments) {\n")
+	for _, a := range arities {
+		fmt.Fprintf(&body, "case %d:\n", a)
+		group := byArity[a]
+		if len(group) == 1 {
+			body.WriteString(overloadBranch(group[0]))
+			continue
+		}
+		fmt.Fprintf(&body, "switch b.ctx.argKind(call.Argument(%d)) {\n", group[0].distinguishPos)
+		for _, s := range group {
+			fmt.Fprintf(&body, "case %s:\n", s.class.kindConst())
+			body.WriteString(overloadBranch(s))
+		}
+		// Any argument kind not matched above — notably KindNull / KindUndefined —
+		// routes to the last overload so a valid call still dispatches instead of
+		// silently returning undefined. Precise WebIDL null/undefined coercion
+		// (prefer the nullable overload) is deferred to the CATH-66 runtime.
+		body.WriteString("default:\n")
+		body.WriteString(overloadBranch(group[len(group)-1]))
+		body.WriteString("}\n")
+	}
+	body.WriteString("}\nreturn goja.Undefined()")
+
+	closure := fmt.Sprintf("func(call goja.FunctionCall) goja.Value {\n%s\n}", body.String())
+	marker := noopMarker(ParseExtAttrs(ops[0].ExtAttrs, b.diag))
+	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:%s\n\t\treturn b.ctx.vm.ToValue(%s)", name, marker, closure))
+	b.keyNames = append(b.keyNames, name)
+}
+
+// overloadBranch renders the coercion + dispatch (+ return) for one overload.
+func overloadBranch(s overloadSig) string {
+	args := make([]string, len(s.params))
+	for i, p := range s.params {
+		args[i] = fmt.Sprintf("coerce[%s](b.ctx, call.Argument(%d))", p.goType, i)
+	}
+	call := fmt.Sprintf("b.impl.%s(%s)", s.goName, strings.Join(args, ", "))
+	if s.returnType == "" {
+		return fmt.Sprintf("%s\nreturn goja.Undefined()\n", call)
+	}
+	return fmt.Sprintf("return b.ctx.vm.ToValue(%s)\n", call)
 }
 
 // addSpecialOp records a special operation (static/stringifier/getter/setter/
@@ -326,14 +551,15 @@ func (b *bindingBuilder) addInjected(jsName, goName, body string, void bool) {
 	if !b.claimInjected(jsName, goName) {
 		return
 	}
-	b.emitCallable(jsName, body, void)
+	b.emitCallable(jsName, body, void, "")
 }
 
 // emitCallable renders a Get case returning a goja-callable closure. body is
 // either an expression returning a goja.Value (void=false) or a statement
-// (void=true), in which case the closure returns goja.Undefined(). It does NOT
-// claim — the caller has already reserved the name.
-func (b *bindingBuilder) emitCallable(jsName, body string, void bool) {
+// (void=true), in which case the closure returns goja.Undefined(). marker is an
+// optional trailing line-comment for the case (recognized no-op ext-attrs). It
+// does NOT claim — the caller has already reserved the name.
+func (b *bindingBuilder) emitCallable(jsName, body string, void bool, marker string) {
 	var inner string
 	if void {
 		inner = fmt.Sprintf("\t\t%s\n\t\treturn goja.Undefined()", body)
@@ -341,7 +567,7 @@ func (b *bindingBuilder) emitCallable(jsName, body string, void bool) {
 		inner = fmt.Sprintf("\t\treturn %s", body)
 	}
 	cl := fmt.Sprintf("func(call goja.FunctionCall) goja.Value {\n%s\n\t}", inner)
-	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:\n\t\treturn b.ctx.vm.ToValue(%s)", jsName, cl))
+	b.getCases = append(b.getCases, fmt.Sprintf("\tcase %q:%s\n\t\treturn b.ctx.vm.ToValue(%s)", jsName, marker, cl))
 	b.keyNames = append(b.keyNames, jsName)
 }
 
@@ -363,16 +589,16 @@ func (b *bindingBuilder) toDecl() *bindingDecl {
 		b.addInjected("toString", "String", "b.ctx.vm.ToValue(b.impl.String())", false)
 	}
 	return &bindingDecl{
-		typeName:     b.typeName,
-		parentName:   b.parentName,
-		getCases:     b.getCases,
-		setCases:     b.setCases,
-		keyNames:     b.keyNames,
-		indexGet:     b.indexGetter,
-		indexGetRet:  b.indexGetterRet,
-		indexSet:     b.indexSetter,
-		indexDel:     b.indexDeleter,
-		indexVal:     b.indexValType,
+		typeName:    b.typeName,
+		parentName:  b.parentName,
+		getCases:    b.getCases,
+		setCases:    b.setCases,
+		keyNames:    b.keyNames,
+		indexGet:    b.indexGetter,
+		indexGetRet: b.indexGetterRet,
+		indexSet:    b.indexSetter,
+		indexDel:    b.indexDeleter,
+		indexVal:    b.indexValType,
 	}
 }
 
@@ -501,6 +727,24 @@ func (d *bindingDecl) writeKeys(sb *strings.Builder) {
 	}
 }
 
+// exposedTypeNames returns the sanitized Go type names of the regular interfaces
+// exposed to global, so a child binding never delegates to an unexposed (and thus
+// unemitted) parent's binding type. Uses a throwaway Diagnostics — the real emit
+// pass records any warnings.
+func exposedTypeNames(ir *webidl.IR, global string) map[string]bool {
+	out := map[string]bool{}
+	for _, def := range ir.All() {
+		iface, ok := def.Primary.(*webidl.Interface)
+		if !ok || iface.Variant != webidl.IfaceRegular || !hasAlnum(iface.Name) {
+			continue
+		}
+		if exposedTo(ParseExtAttrs(iface.ExtAttrs, NewDiagnostics()).ExposedScopes, global) {
+			out[IdentSanitize(iface.Name)] = true
+		}
+	}
+	return out
+}
+
 // GenerateBindings runs the binding backend over ir: for each regular interface
 // it emits a DynamicObject accessor and writes them all to bindings.go in
 // opts.OutputDir. It is independent of Generate (which emits the layer-1
@@ -521,10 +765,25 @@ func GenerateBindings(ir *webidl.IR, opts Options) error {
 
 	tm := typemap.Mapper{}
 	diag := NewDiagnostics()
+	global := opts.exposureGlobalOrDefault()
+	exposed := exposedTypeNames(ir, global)
 
 	var all []Decl
+	var manifest []manifestEntry
 	for _, def := range ir.All() {
-		all = append(all, NewBindingDecls(def, tm, diag)...)
+		decls := newBindingDeclsFor(def, tm, diag, global, exposed)
+		if len(decls) == 0 {
+			continue
+		}
+		all = append(all, decls...)
+		// Non-empty decls ⇒ def.Primary is a regular, exposed interface.
+		iface := def.Primary.(*webidl.Interface)
+		scopes := ParseExtAttrs(iface.ExtAttrs, diag).ExposedScopes
+		manifest = append(manifest, manifestEntry{
+			idlName:  iface.Name,
+			typeName: IdentSanitize(iface.Name),
+			globals:  manifestGlobals(scopes),
+		})
 	}
 	if !diag.IsClean() {
 		return fmt.Errorf("codegen.GenerateBindings: type-mapping errors:\n%s", diag.Format())
@@ -545,6 +804,11 @@ func GenerateBindings(ir *webidl.IR, opts Options) error {
 	for _, d := range all {
 		f.AddDecl(d)
 	}
+	// The [Exposed] registry (CATH-65 D4/D5): emitted only when there is at least
+	// one exposed binding, so an empty IR carries no goja/bindCtx reference.
+	if len(manifest) > 0 {
+		f.AddDecl(&manifestDecl{entries: manifest})
+	}
 
 	src, err := f.Render()
 	if err != nil {
@@ -555,4 +819,40 @@ func GenerateBindings(ir *webidl.IR, opts Options) error {
 		return fmt.Errorf("codegen.GenerateBindings: write %q: %w", outPath, err)
 	}
 	return nil
+}
+
+// manifestEntry is one exposed interface in the [Exposed] registry.
+type manifestEntry struct {
+	idlName  string   // JS global name (the IDL interface name)
+	typeName string   // sanitized Go type name (<typeName>Binding)
+	globals  []string // normalized exposure scopes (["*"] for absent/star)
+}
+
+// manifestDecl emits the exposure registry CATH-66's Register ranges over: the
+// ExposedBinding type plus the ExposedBindings slice. The New factory wraps a
+// layer-1 impl into its DynamicObject binding (CATH-65 D5).
+type manifestDecl struct {
+	entries []manifestEntry
+}
+
+func (d *manifestDecl) declName() string { return "ExposedBindings" }
+
+func (d *manifestDecl) declSource() string {
+	var sb strings.Builder
+	sb.WriteString("type ExposedBinding struct {\n")
+	sb.WriteString("\tName    string\n")
+	sb.WriteString("\tGlobals []string\n")
+	sb.WriteString("\tNew     func(ctx *bindCtx, impl any) goja.Value\n")
+	sb.WriteString("}\n\n")
+	sb.WriteString("var ExposedBindings = []ExposedBinding{\n")
+	for _, e := range d.entries {
+		globs := make([]string, len(e.globals))
+		for i, g := range e.globals {
+			globs[i] = fmt.Sprintf("%q", g)
+		}
+		fmt.Fprintf(&sb, "\t{Name: %q, Globals: []string{%s}, New: func(ctx *bindCtx, impl any) goja.Value { return ctx.vm.NewDynamicObject(&%sBinding{ctx: ctx, impl: impl.(%s)}) }},\n",
+			e.idlName, strings.Join(globs, ", "), e.typeName, e.typeName)
+	}
+	sb.WriteString("}\n")
+	return sb.String()
 }

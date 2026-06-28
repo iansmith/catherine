@@ -18,6 +18,21 @@ type Options struct {
 
 	// PackageName is the Go package declaration for generated files.
 	PackageName string
+
+	// ExposureGlobal is the JS global the binding backend targets when honoring
+	// [Exposed] (CATH-65). An interface not exposed to this global gets no
+	// binding and no registry entry. Empty means "Window". Ignored by the
+	// layer-1 generator (Generate) — exposure is a binding-only concern.
+	ExposureGlobal string
+}
+
+// exposureGlobalOrDefault returns the configured exposure global, defaulting to
+// "Window" when unset.
+func (o Options) exposureGlobalOrDefault() string {
+	if o.ExposureGlobal == "" {
+		return "Window"
+	}
+	return o.ExposureGlobal
 }
 
 // Generate runs the full codegen pipeline: it iterates all definitions in ir,
