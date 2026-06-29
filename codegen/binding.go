@@ -536,7 +536,7 @@ func iterCallBody(m iterMethod) string {
 			wraps[i] = wrapResult("b.ctx", a.goName, a.goType)
 		}
 		return fmt.Sprintf(
-			"_cb := b.ctx.Callback(call.Argument(0))\n\tb.impl.ForEach(func(%s) {\n\t\t_cb(goja.Undefined(), %s)\n\t})",
+			"_cb := b.ctx.Callback(call.Argument(0))\n\tif _cb == nil {\n\t\treturn goja.Undefined()\n\t}\n\tb.impl.ForEach(func(%s) {\n\t\t_cb(call.Argument(1), %s)\n\t})",
 			strings.Join(parts, ", "),
 			strings.Join(wraps, ", "),
 		)

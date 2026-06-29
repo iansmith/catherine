@@ -83,15 +83,26 @@ func Generate(ir *webidl.IR, opts Options) error {
 		allDecls = append(allDecls, dispatchDef(def, tm, diag)...)
 	}
 	needsIter := false
+	needsContext := false
 	for _, d := range DedupeDecls(allDecls) {
 		f.AddDecl(d)
-		if id, ok := d.(*InterfaceDecl); ok && id.needsIter {
-			needsIter = true
+		if id, ok := d.(*InterfaceDecl); ok {
+			if id.needsIter {
+				needsIter = true
+			}
+			if id.needsContext {
+				needsContext = true
+			}
 		}
 	}
-	if needsIter {
+	if needsIter || needsContext {
 		tr := NewImportTracker()
-		tr.Add("iter")
+		if needsIter {
+			tr.Add("iter")
+		}
+		if needsContext {
+			tr.Add("context")
+		}
 		f.SetImports(tr)
 	}
 
