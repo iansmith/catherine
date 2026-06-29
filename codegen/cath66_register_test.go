@@ -86,3 +86,97 @@ func TestCATH66_ReflectQualified(t *testing.T) {
 		t.Errorf("reflected getter must call the (qualified) reflect shim\n%s", src)
 	}
 }
+
+// ===========================================================================
+// CATH-66 adversary-gap tests (Step 0f) — re-qualification COMPLETENESS.
+// A richer fixture exercises overload (ArgKind + Kind labels), [SameObject],
+// an iterable (WrapSeq), and an indexed getter (AsArrayIndex) — none of which
+// the simple cath66IDL hits. Generated code must compile against jsbinding, so
+// NO unqualified shim symbol and NO unexported-field access may survive.
+// ===========================================================================
+
+const cath66RichIDL = `
+interface Node {};
+
+[Exposed=Window]
+interface Doc {
+  [SameObject] readonly attribute Node body;
+  undefined add(DOMString s);
+  undefined add(Node n);
+  getter Node item(unsigned long index);
+  iterable<Node>;
+};
+
+[Exposed=Window]
+interface Range {};
+`
+
+func cath66RichGenerated(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	ir := mustIR(t, cath66RichIDL)
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+	return readGenerated(t, dir, "bindings.go")
+}
+
+// No unqualified shim symbol may survive — each would be a compile break against
+// the runtime package.
+func TestCATH66_NoUnqualifiedShimSymbols(t *testing.T) {
+	t.Parallel()
+	src := cath66RichGenerated(t)
+	for _, bad := range []string{
+		"coerce[",          // → rt.Coerce[
+		"asArrayIndex(",    // → rt.AsArrayIndex(
+		"b.ctx.argKind",    // → b.ctx.ArgKind
+		"b.ctx.sameObject", // → b.ctx.SameObject
+		"b.ctx.wrapSeq",    // → b.ctx.WrapSeq
+		"b.ctx.callbackFn", // → b.ctx.Callback
+		"b.ctx.vm.",        // → b.ctx.VM().  (vm is unexported cross-package)
+		"ctx.vm.NewDynamicObject", // manifest New → ctx.VM().NewDynamicObject
+		" bindCtx",         // the local type is gone
+	} {
+		if strings.Contains(src, bad) {
+			t.Errorf("generated source still contains unqualified/unexported %q — will not compile against jsbinding\n%s", bad, src)
+		}
+	}
+}
+
+// The unexported vm field must be reached via the VM() accessor.
+func TestCATH66_UsesVMAccessor(t *testing.T) {
+	t.Parallel()
+	src := cath66RichGenerated(t)
+	if !strings.Contains(src, "b.ctx.VM()") {
+		t.Errorf("generated code must use the exported VM() accessor, not the unexported field\n%s", src)
+	}
+}
+
+// Overload / collection paths must also be qualified.
+func TestCATH66_QualifiedOverloadAndCollections(t *testing.T) {
+	t.Parallel()
+	src := cath66RichGenerated(t)
+	for _, want := range []string{
+		"b.ctx.ArgKind(", // overload dispatch
+		"rt.KindString",  // qualified Kind case label
+		"b.ctx.SameObject(",
+		"rt.AsArrayIndex(", // indexed getter
+		"b.ctx.WrapSeq(",   // iterable
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("re-qualified output missing %q\n%s", want, src)
+		}
+	}
+}
+
+// Register: non-constructible exposed interface throws; constructor coerces args.
+func TestCATH66_Register_IllegalCtorAndArgCoercion(t *testing.T) {
+	t.Parallel()
+	src := cath66Generated(t) // Element (constructor) + Node (no constructor, lenient-exposed)
+	if !strings.Contains(src, "Illegal constructor") {
+		t.Errorf("a non-constructible exposed interface must throw an illegal-constructor TypeError\n%s", src)
+	}
+	if !strings.Contains(src, "rt.Coerce[string]") || !strings.Contains(src, `env.Construct("Element"`) {
+		t.Errorf("the constructor must coerce its args before calling env.Construct\n%s", src)
+	}
+}
