@@ -535,8 +535,11 @@ func iterCallBody(m iterMethod) string {
 			parts[i] = a.goName + " " + a.goType
 			wraps[i] = wrapResult("b.ctx", a.goName, a.goType)
 		}
+		if len(m.cbArgs) == 0 {
+			panic("iterCallBody: renderForEach requires non-empty cbArgs")
+		}
 		return fmt.Sprintf(
-			"_cb := b.ctx.Callback(call.Argument(0))\n\tif _cb == nil {\n\t\treturn goja.Undefined()\n\t}\n\tb.impl.ForEach(func(%s) {\n\t\t_cb(call.Argument(1), %s)\n\t})",
+			"_cb := b.ctx.Callback(call.Argument(0))\n\tif _cb == nil {\n\t\trt.ThrowType(b.ctx.VM(), \"forEach argument 1 is not a function\")\n\t\treturn goja.Undefined()\n\t}\n\tb.impl.ForEach(func(%s) {\n\t\tif _, _err := _cb(call.Argument(1), %s, call.This); _err != nil {\n\t\t\tpanic(_err)\n\t\t}\n\t})",
 			strings.Join(parts, ", "),
 			strings.Join(wraps, ", "),
 		)
