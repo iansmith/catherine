@@ -6,6 +6,9 @@ package codegen_test
 // generated SOURCE and fail on the current (unqualified, Register-less) output.
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -60,8 +63,10 @@ func TestCATH66_ObjectArgsUnwrap_ReturnsWrap(t *testing.T) {
 	if !strings.Contains(src, "b.ctx.Unwrap(call.Argument(0))") {
 		t.Errorf("object-typed operation arg must unwrap to the impl\n%s", src)
 	}
-	if !strings.Contains(src, "b.ctx.Wrap(") {
-		t.Errorf("object-typed return must go through the cached Wrap\n%s", src)
+	// Object-typed returns map to Go `any` (interface names don't resolve in
+	// typemap), so they route through the identity-preserving WrapAny.
+	if !strings.Contains(src, "b.ctx.WrapAny(") {
+		t.Errorf("object-typed return must go through the cached WrapAny\n%s", src)
 	}
 }
 
@@ -127,15 +132,15 @@ func TestCATH66_NoUnqualifiedShimSymbols(t *testing.T) {
 	t.Parallel()
 	src := cath66RichGenerated(t)
 	for _, bad := range []string{
-		"coerce[",          // → rt.Coerce[
-		"asArrayIndex(",    // → rt.AsArrayIndex(
-		"b.ctx.argKind",    // → b.ctx.ArgKind
-		"b.ctx.sameObject", // → b.ctx.SameObject
-		"b.ctx.wrapSeq",    // → b.ctx.WrapSeq
-		"b.ctx.callbackFn", // → b.ctx.Callback
-		"b.ctx.vm.",        // → b.ctx.VM().  (vm is unexported cross-package)
+		"coerce[",                 // → rt.Coerce[
+		"asArrayIndex(",           // → rt.AsArrayIndex(
+		"b.ctx.argKind",           // → b.ctx.ArgKind
+		"b.ctx.sameObject",        // → b.ctx.SameObject
+		"b.ctx.wrapSeq",           // → b.ctx.WrapSeq
+		"b.ctx.callbackFn",        // → b.ctx.Callback
+		"b.ctx.vm.",               // → b.ctx.VM().  (vm is unexported cross-package)
 		"ctx.vm.NewDynamicObject", // manifest New → ctx.VM().NewDynamicObject
-		" bindCtx",         // the local type is gone
+		" bindCtx",                // the local type is gone
 	} {
 		if strings.Contains(src, bad) {
 			t.Errorf("generated source still contains unqualified/unexported %q — will not compile against jsbinding\n%s", bad, src)
@@ -178,5 +183,63 @@ func TestCATH66_Register_IllegalCtorAndArgCoercion(t *testing.T) {
 	}
 	if !strings.Contains(src, "rt.Coerce[string]") || !strings.Contains(src, `env.Construct("Element"`) {
 		t.Errorf("the constructor must coerce its args before calling env.Construct\n%s", src)
+	}
+}
+
+// Compile backstop (review G5): generate BOTH backends (layer-1 generated.go +
+// bindings.go incl. Register) for a representative IDL into a temp module and
+// `go build` it against the real jsbinding package. String asserts can't catch
+// an unexported-field access or a leftover unqualified symbol; a real compile can.
+const cath66CompileIDL = `
+interface Node {};
+
+[Exposed=Window]
+interface Element : Node {
+  [Reflect] attribute DOMString id;
+  attribute long width;
+  Node appendChild(Node node);
+  constructor(DOMString localName);
+};
+`
+
+func TestCATH66_GeneratedCompiles(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not found; skipping compile backstop")
+	}
+	dir := t.TempDir()
+	ir := mustIR(t, cath66CompileIDL)
+	if err := codegen.Generate(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("Generate (layer-1): %v", err)
+	}
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+
+	cathRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	gomod := "module gentest\n\ngo 1.26\n\nrequire (\n" +
+		"\tgithub.com/iansmith/webidl v0.0.0\n" +
+		"\tgithub.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3\n)\n\n" +
+		"replace github.com/iansmith/webidl => " + cathRoot + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	// Reuse catherine's go.sum so goja (+ its deps) resolve from the module cache
+	// offline; the replaced local module needs no checksum.
+	if sum, err := os.ReadFile(filepath.Join(cathRoot, "go.sum")); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644)
+	}
+
+	cmd := exec.Command(goBin, "build", "./...")
+	cmd.Dir = dir
+	// -mod=mod lets the build pull goja's indirect deps into the temp go.mod from
+	// the module cache; GOPROXY=off keeps it offline (the deps are already cached
+	// because catherine itself requires goja).
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated output does not compile against jsbinding:\n%s", out)
 	}
 }

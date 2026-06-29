@@ -16,8 +16,8 @@ import (
 
 type fakeEnv struct{ root any }
 
-func (e fakeEnv) Root() any                            { return e.root }
-func (e fakeEnv) Construct(string, []any) any          { return nil }
+func (e fakeEnv) Root() any                   { return e.root }
+func (e fakeEnv) Construct(string, []any) any { return nil }
 
 type fakeNode struct {
 	tag   string
@@ -36,11 +36,11 @@ func (n *fakeNode) HasAttribute(k string) bool { _, ok := n.attrs[k]; return ok 
 
 type fakeDyn struct{}
 
-func (fakeDyn) Get(string) goja.Value      { return goja.Undefined() }
+func (fakeDyn) Get(string) goja.Value       { return goja.Undefined() }
 func (fakeDyn) Set(string, goja.Value) bool { return false }
-func (fakeDyn) Has(string) bool            { return false }
-func (fakeDyn) Delete(string) bool         { return false }
-func (fakeDyn) Keys() []string             { return nil }
+func (fakeDyn) Has(string) bool             { return false }
+func (fakeDyn) Delete(string) bool          { return false }
+func (fakeDyn) Keys() []string              { return nil }
 
 func newCtx() *jsbinding.Ctx { return jsbinding.NewCtx(goja.New(), fakeEnv{}) }
 
@@ -160,8 +160,14 @@ func TestThrowType_Panics(t *testing.T) {
 		if r == nil {
 			t.Fatalf("ThrowType must panic with a JS TypeError")
 		}
-		if ex, ok := r.(*goja.Exception); !ok || !strings.Contains(ex.Error(), "boom") {
-			t.Errorf("ThrowType must panic with a goja TypeError carrying the message; got %T: %v", r, r)
+		// Panicked from a direct Go call, the value is the goja TypeError object
+		// (goja converts it to a catchable JS exception when it crosses a JS call).
+		v, ok := r.(goja.Value)
+		if !ok {
+			t.Fatalf("panic value must be a goja value; got %T", r)
+		}
+		if s := v.String(); !strings.Contains(s, "TypeError") || !strings.Contains(s, "boom") {
+			t.Errorf("ThrowType must throw a TypeError carrying the message; got %q", s)
 		}
 	}()
 	jsbinding.ThrowType(vm, "boom")
@@ -228,6 +234,45 @@ func TestEndToEnd_AttrAndMethod_HitsImpl(t *testing.T) {
 	}
 	if d.String() != "node:div" {
 		t.Errorf("el.describe() = %q, want node:div", d.String())
+	}
+}
+
+// ctorEnv is a fake Env whose Construct builds a *fakeNode (mirrors what louis14
+// would do). registerElement mirrors the EXACT shapes the generated Register
+// emits, so this test doubles as a compile check that those shapes type-check
+// against the real jsbinding package.
+type ctorEnv struct{}
+
+func (ctorEnv) Root() any { return nil }
+func (ctorEnv) Construct(name string, args []any) any {
+	tag := ""
+	if len(args) > 0 {
+		tag, _ = args[0].(string)
+	}
+	return &fakeNode{tag: tag}
+}
+
+func registerElement(vm *goja.Runtime, env jsbinding.Env) *jsbinding.Ctx {
+	ctx := jsbinding.NewCtx(vm, env)
+	vm.Set("Element", func(call goja.ConstructorCall) *goja.Object {
+		impl := env.Construct("Element", []any{jsbinding.Coerce[string](ctx, call.Argument(0))})
+		return ctx.Wrap(impl, func() goja.DynamicObject { return &elemBinding{ctx: ctx, impl: impl.(*fakeNode)} }).ToObject(vm)
+	})
+	return ctx
+}
+
+// G1/AC#1 — the headline: a Register-style entrypoint + the shim lets JS construct
+// an exposed interface via env, then read/write its attributes and call its
+// methods, all reaching the fake impl.
+func TestEndToEnd_Register_Constructor(t *testing.T) {
+	vm := goja.New()
+	registerElement(vm, ctorEnv{})
+	res, err := vm.RunString(`var e = new Element("hero-div"); e.id = "x"; e.id + ":" + e.describe()`)
+	if err != nil {
+		t.Fatalf("RunString: %v", err)
+	}
+	if res.String() != "x:node:hero-div" {
+		t.Errorf("end-to-end new Element + attr + method = %q, want x:node:hero-div", res.String())
 	}
 }
 
