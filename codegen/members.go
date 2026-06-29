@@ -94,6 +94,7 @@ type iterMethod struct {
 	params     []ifaceParam   // layer-1 signature params
 	returnType string         // layer-1 return type ("" for void)
 	render     iterRenderKind // how the binding wraps the dispatch
+	cbArgs     []ifaceParam   // typed closure args for the adapter (renderForEach only; nil for other renders)
 }
 
 // resolveIterMethods returns the ordered iteration methods an iterable/maplike/
@@ -125,7 +126,7 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
 			{jsName: "keys", goName: "Keys", returnType: iterSeq(keyType), render: renderSeq},
 			{jsName: "entries", goName: "Entries", returnType: iterSeq2(keyType, valType), render: renderSeq},
-			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}, render: renderForEach},
+			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}, render: renderForEach, cbArgs: []ifaceParam{{goName: "_v", goType: valType}, {goName: "_k", goType: keyType}}},
 		}
 
 	case webidl.IterAsyncIterable:

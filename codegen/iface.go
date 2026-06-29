@@ -33,9 +33,11 @@ type ifaceParam struct {
 
 // InterfaceDecl is a Decl that emits a Go interface type from a WebIDL interface.
 type InterfaceDecl struct {
-	typeName   string
-	parentName string // "" means no parent embedding
-	methods    []ifaceMethod
+	typeName    string
+	parentName  string // "" means no parent embedding
+	methods     []ifaceMethod
+	needsIter   bool // true when any method return type uses iter.Seq / iter.Seq2
+	needsContext bool // true when any iterable method param uses context.Context
 }
 
 func (d *InterfaceDecl) declName() string { return d.typeName }
@@ -553,6 +555,14 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 		}
 		seen[m.goName] = true
 		idecl.methods = append(idecl.methods, ifaceMethod{goName: m.goName, params: m.params, returnType: m.returnType})
+		if strings.HasPrefix(m.returnType, "iter.") {
+			idecl.needsIter = true
+		}
+		for _, p := range m.params {
+			if strings.HasPrefix(p.goType, "context.") {
+				idecl.needsContext = true
+			}
+		}
 	}
 }
 

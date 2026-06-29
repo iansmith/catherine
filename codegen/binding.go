@@ -529,7 +529,20 @@ func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
 // stays decoupled from iface.go's exact type spelling.
 func iterCallBody(m iterMethod) string {
 	if m.render == renderForEach {
-		return "b.impl.ForEach(b.ctx.Callback(call.Argument(0)))"
+		parts := make([]string, len(m.cbArgs))
+		wraps := make([]string, len(m.cbArgs))
+		for i, a := range m.cbArgs {
+			parts[i] = a.goName + " " + a.goType
+			wraps[i] = wrapResult("b.ctx", a.goName, a.goType)
+		}
+		if len(m.cbArgs) == 0 {
+			panic("iterCallBody: renderForEach requires non-empty cbArgs")
+		}
+		return fmt.Sprintf(
+			"_cb := b.ctx.Callback(call.Argument(0))\n\tif _cb == nil {\n\t\trt.ThrowType(b.ctx.VM(), \"forEach argument 1 is not a function\")\n\t\treturn goja.Undefined()\n\t}\n\tb.impl.ForEach(func(%s) {\n\t\tif _, _err := _cb(call.Argument(1), %s, call.This); _err != nil {\n\t\t\tif _ex, _ok := _err.(*goja.Exception); _ok {\n\t\t\t\tpanic(_ex)\n\t\t\t} else {\n\t\t\t\tpanic(_err)\n\t\t\t}\n\t\t}\n\t})",
+			strings.Join(parts, ", "),
+			strings.Join(wraps, ", "),
+		)
 	}
 	args := make([]string, len(m.params))
 	for i, p := range m.params {

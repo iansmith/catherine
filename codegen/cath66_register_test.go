@@ -199,6 +199,7 @@ interface Element : Node {
   attribute long width;
   Node appendChild(Node node);
   constructor(DOMString localName);
+  iterable<Node>;
 };
 `
 
