@@ -82,8 +82,17 @@ func Generate(ir *webidl.IR, opts Options) error {
 	for _, def := range ir.All() {
 		allDecls = append(allDecls, dispatchDef(def, tm, diag)...)
 	}
+	needsIter := false
 	for _, d := range DedupeDecls(allDecls) {
 		f.AddDecl(d)
+		if id, ok := d.(*InterfaceDecl); ok && id.needsIter {
+			needsIter = true
+		}
+	}
+	if needsIter {
+		tr := NewImportTracker()
+		tr.Add("iter")
+		f.SetImports(tr)
 	}
 
 	if !diag.IsClean() {

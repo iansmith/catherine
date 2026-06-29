@@ -36,6 +36,7 @@ type InterfaceDecl struct {
 	typeName   string
 	parentName string // "" means no parent embedding
 	methods    []ifaceMethod
+	needsIter  bool // true when any method return type uses iter.Seq / iter.Seq2
 }
 
 func (d *InterfaceDecl) declName() string { return d.typeName }
@@ -553,6 +554,9 @@ func addIterMethods(idecl *InterfaceDecl, it *webidl.IterableLike, tm typemap.Ma
 		}
 		seen[m.goName] = true
 		idecl.methods = append(idecl.methods, ifaceMethod{goName: m.goName, params: m.params, returnType: m.returnType})
+		if strings.HasPrefix(m.returnType, "iter.") {
+			idecl.needsIter = true
+		}
 	}
 }
 

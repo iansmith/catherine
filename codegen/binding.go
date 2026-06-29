@@ -529,7 +529,17 @@ func (b *bindingBuilder) addIterable(it *webidl.IterableLike) {
 // stays decoupled from iface.go's exact type spelling.
 func iterCallBody(m iterMethod) string {
 	if m.render == renderForEach {
-		return "b.impl.ForEach(b.ctx.Callback(call.Argument(0)))"
+		parts := make([]string, len(m.cbArgs))
+		wraps := make([]string, len(m.cbArgs))
+		for i, a := range m.cbArgs {
+			parts[i] = a.goName + " " + a.goType
+			wraps[i] = wrapResult("b.ctx", a.goName, a.goType)
+		}
+		return fmt.Sprintf(
+			"_cb := b.ctx.Callback(call.Argument(0))\n\tb.impl.ForEach(func(%s) {\n\t\t_cb(goja.Undefined(), %s)\n\t})",
+			strings.Join(parts, ", "),
+			strings.Join(wraps, ", "),
+		)
 	}
 	args := make([]string, len(m.params))
 	for i, p := range m.params {
