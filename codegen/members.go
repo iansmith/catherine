@@ -337,13 +337,13 @@ const (
 func (c argClass) kindConst() string {
 	switch c {
 	case classString:
-		return "KindString"
+		return "rt.KindString"
 	case classNumber:
-		return "KindNumber"
+		return "rt.KindNumber"
 	case classBoolean:
-		return "KindBoolean"
+		return "rt.KindBoolean"
 	}
-	return "KindObject"
+	return "rt.KindObject"
 }
 
 var numericGoTypes = map[string]bool{
@@ -364,7 +364,14 @@ func goTypeOf(t *webidl.IDLType, tm typemap.Mapper) string {
 
 // classifyArg maps an argument's IDL type to a coarse runtime class.
 func classifyArg(t *webidl.IDLType, tm typemap.Mapper) argClass {
-	switch g := goTypeOf(t, tm); {
+	return classGoType(goTypeOf(t, tm))
+}
+
+// classGoType maps a Go type string to a coarse runtime class. Anything that is
+// not a string, boolean, or number (including unresolved interface types, which
+// map to "any") is treated as object — coerced via Unwrap, returned via WrapAny.
+func classGoType(g string) argClass {
+	switch {
 	case g == "string":
 		return classString
 	case g == "bool":

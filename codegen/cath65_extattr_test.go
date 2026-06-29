@@ -136,10 +136,10 @@ func TestReflect_String_BindingReflectsAttrMap(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "", reflectAttr("id", "DOMString", xa("Reflect")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "id")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetString(b.impl, "id")`) {
 		t.Errorf("reflected getter must go through reflectGetString\n%s", src)
 	}
-	if !strings.Contains(src, `b.ctx.reflectSetString(b.impl, "id"`) {
+	if !strings.Contains(src, `b.ctx.ReflectSetString(b.impl, "id"`) {
 		t.Errorf("reflected setter must go through reflectSetString\n%s", src)
 	}
 	if strings.Contains(src, "b.impl.IdAttr()") {
@@ -161,10 +161,10 @@ func TestReflect_Boolean(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "", reflectAttr("hidden", "boolean", xa("Reflect")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetBool(b.impl, "hidden")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetBool(b.impl, "hidden")`) {
 		t.Errorf("boolean [Reflect] must use reflectGetBool (presence-based)\n%s", src)
 	}
-	if !strings.Contains(src, `b.ctx.reflectSetBool(b.impl, "hidden"`) {
+	if !strings.Contains(src, `b.ctx.ReflectSetBool(b.impl, "hidden"`) {
 		t.Errorf("boolean [Reflect] must use reflectSetBool\n%s", src)
 	}
 }
@@ -173,10 +173,10 @@ func TestReflect_UnsignedLong(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "", reflectAttr("width", "unsigned long", xa("Reflect")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetUint32(b.impl, "width")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetUint32(b.impl, "width")`) {
 		t.Errorf("unsigned long [Reflect] must use reflectGetUint32\n%s", src)
 	}
-	if !strings.Contains(src, `b.ctx.reflectSetUint32(b.impl, "width"`) {
+	if !strings.Contains(src, `b.ctx.ReflectSetUint32(b.impl, "width"`) {
 		t.Errorf("unsigned long [Reflect] must use reflectSetUint32\n%s", src)
 	}
 }
@@ -186,7 +186,7 @@ func TestReflect_RenamedContentAttr(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "", reflectAttr("className", "DOMString", xav("Reflect", "class")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "class")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetString(b.impl, "class")`) {
 		t.Errorf("[Reflect=class] must reflect content attribute \"class\"\n%s", src)
 	}
 }
@@ -223,7 +223,7 @@ func TestSameObject_CachesReadonlyObjectAttr(t *testing.T) {
 	a.ExtAttrs = []*webidl.ExtAttr{xa("SameObject")}
 	def := regularMergedDef("Window", "", a)
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.sameObject(b.impl, "frames"`) {
+	if !strings.Contains(src, `b.ctx.SameObject(b.impl, "frames"`) {
 		t.Errorf("[SameObject] readonly object attr must wrap the getter in sameObject\n%s", src)
 	}
 }
@@ -282,7 +282,7 @@ func TestOverload_TypeDiscrimination_SameArity(t *testing.T) {
 		op("add", idlType("undefined"), arg("item", "DOMString")),
 		op("add", idlType("undefined"), arg("item", "Node")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, "b.ctx.argKind(call.Argument(0))") {
+	if !strings.Contains(src, "b.ctx.ArgKind(call.Argument(0))") {
 		t.Errorf("same-arity overloads must discriminate via argKind at the distinguishing position\n%s", src)
 	}
 	if !strings.Contains(src, "b.impl.Add1String(") || !strings.Contains(src, "b.impl.Add1Node(") {
@@ -332,10 +332,10 @@ func TestReflect_SignedLong_MixedCaseLowercased(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "", reflectAttr("tabIndex", "long", xa("Reflect")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetInt32(b.impl, "tabindex")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetInt32(b.impl, "tabindex")`) {
 		t.Errorf("signed long [Reflect] must use reflectGetInt32 with the lowercased name\n%s", src)
 	}
-	if !strings.Contains(src, `b.ctx.reflectSetInt32(b.impl, "tabindex"`) {
+	if !strings.Contains(src, `b.ctx.ReflectSetInt32(b.impl, "tabindex"`) {
 		t.Errorf("signed long [Reflect] must use reflectSetInt32\n%s", src)
 	}
 	// The JS property key stays "tabIndex"; only the reflect shim call uses the
@@ -352,7 +352,7 @@ func TestReflect_Readonly_GetterOnlyNoSetter(t *testing.T) {
 	a.ExtAttrs = []*webidl.ExtAttr{xa("Reflect")}
 	def := regularMergedDef("Element", "", a)
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "id")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetString(b.impl, "id")`) {
 		t.Errorf("readonly [Reflect] must still emit the reflected getter\n%s", src)
 	}
 	if strings.Contains(src, "reflectSetString") {
@@ -365,7 +365,7 @@ func TestReflect_WithParent_TrimAndDelegate(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Element", "Node", reflectAttr("id", "DOMString", xa("Reflect")))
 	bsrc := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(bsrc, `b.ctx.reflectGetString(b.impl, "id")`) {
+	if !strings.Contains(bsrc, `b.ctx.ReflectGetString(b.impl, "id")`) {
 		t.Errorf("child binding must still reflect\n%s", bsrc)
 	}
 	if !strings.Contains(bsrc, "parent *NodeBinding") || !strings.Contains(bsrc, "b.parent.Get(key)") {
@@ -386,7 +386,7 @@ func TestExposed_Manifest_FullShape(t *testing.T) {
 		t.Fatalf("GenerateBindings: %v", err)
 	}
 	src := readGenerated(t, dir, "bindings.go")
-	for _, want := range []string{"type ExposedBinding struct", "Globals", "func(ctx *bindCtx, impl any) goja.Value", "New:"} {
+	for _, want := range []string{"[]rt.ExposedBinding{", "Globals", "func(ctx *rt.Ctx, impl any) goja.Value", "New:"} {
 		if !strings.Contains(src, want) {
 			t.Errorf("manifest must carry the full {Name, Globals, New} shape — missing %q\n%s", want, src)
 		}
@@ -416,7 +416,7 @@ func TestReflect_SameObject_Combo(t *testing.T) {
 	a.ExtAttrs = []*webidl.ExtAttr{xa("Reflect"), xa("SameObject")}
 	def := regularMergedDef("Element", "", a)
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, `b.ctx.reflectGetString(b.impl, "id")`) {
+	if !strings.Contains(src, `b.ctx.ReflectGetString(b.impl, "id")`) {
 		t.Errorf("reflect must win over SameObject on a primitive reflected attr\n%s", src)
 	}
 	if strings.Contains(src, "sameObject") {
@@ -443,7 +443,7 @@ func TestOverload_NonVoidReturn_Wrapped(t *testing.T) {
 		op("item", idlType("DOMString"), arg("i", "long")),
 		op("item", idlType("DOMString"), arg("i", "long"), arg("j", "long")))
 	src := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(src, "b.ctx.vm.ToValue(b.impl.Item1(") {
+	if !strings.Contains(src, "b.ctx.VM().ToValue(b.impl.Item1(") {
 		t.Errorf("non-void overload branch must wrap its result in ToValue\n%s", src)
 	}
 }
@@ -551,7 +551,7 @@ func TestReflect_Stringifier_NoCrossBackendStringMethod(t *testing.T) {
 	def := regularMergedDef("Link", "", a)
 
 	bsrc := bindingSrc(t, def, codegen.NewDiagnostics())
-	if !strings.Contains(bsrc, `b.ctx.reflectGetString(b.impl, "href")`) {
+	if !strings.Contains(bsrc, `b.ctx.ReflectGetString(b.impl, "href")`) {
 		t.Errorf("reflected stringifier attr must still reflect\n%s", bsrc)
 	}
 	if strings.Contains(bsrc, "b.impl.String()") || strings.Contains(bsrc, `case "toString"`) {

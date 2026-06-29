@@ -24,6 +24,22 @@ type Options struct {
 	// binding and no registry entry. Empty means "Window". Ignored by the
 	// layer-1 generator (Generate) — exposure is a binding-only concern.
 	ExposureGlobal string
+
+	// RuntimeImportPath is the import path of the jsbinding runtime shim the
+	// generated bindings call into (CATH-66), aliased `rt`. Empty means the
+	// default. Ignored by the layer-1 generator.
+	RuntimeImportPath string
+}
+
+const defaultRuntimeImportPath = "github.com/iansmith/webidl/jsbinding"
+
+// runtimeImportPathOrDefault returns the configured runtime shim import path,
+// defaulting to the in-repo jsbinding package.
+func (o Options) runtimeImportPathOrDefault() string {
+	if o.RuntimeImportPath == "" {
+		return defaultRuntimeImportPath
+	}
+	return o.RuntimeImportPath
 }
 
 // exposureGlobalOrDefault returns the configured exposure global, defaulting to

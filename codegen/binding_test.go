@@ -26,7 +26,7 @@ var updateGolden = flag.Bool("update-golden", false, "regenerate codegen golden 
 // Design (locked):
 //   - One generated type `<Iface>Binding` per regular interface, implementing
 //     goja.DynamicObject (Get/Set/Has/Delete/Keys).
-//   - Struct: { ctx *bindCtx; impl <Iface>; parent *<Parent>Binding (if any) }.
+//   - Struct: { ctx *rt.Ctx; impl <Iface>; parent *<Parent>Binding (if any) }.
 //   - Inheritance via embed-and-delegate: own members handled locally, the rest
 //     fall through to b.parent.
 //   - readonly attr → Get case only; writable attr → Get + Set; operation →
@@ -319,8 +319,8 @@ func TestBinding_Operation_CoercesArgsAndWrapsReturn(t *testing.T) {
 		t.Errorf("operation closure ignores its argument (no call.Argument(0))\n---\n%s", src)
 	}
 	// ...and wrap the Go return back into a goja.Value.
-	if !strings.Contains(src, "b.ctx.vm.ToValue(") {
-		t.Errorf("operation closure must wrap its return via b.ctx.vm.ToValue(...)\n---\n%s", src)
+	if !strings.Contains(src, "b.ctx.VM().ToValue(") {
+		t.Errorf("operation closure must wrap its return via b.ctx.VM().ToValue(...)\n---\n%s", src)
 	}
 }
 
@@ -688,9 +688,9 @@ func TestBinding_Maplike_RoutesMethods(t *testing.T) {
 		`case "get"`, `case "has"`, `case "keys"`, `case "values"`,
 		`case "entries"`, `case "size"`, `case "set"`, `case "delete"`, `case "clear"`,
 		// wrap shapes — assert each render branch, not just method presence:
-		"b.ctx.wrapSeq(b.impl.Values())",         // renderSeq
-		"b.ctx.vm.ToValue(b.impl.Get(",           // renderScalar
-		"b.ctx.vm.ToValue(b.impl.Size())",        // renderScalar, no args
+		"b.ctx.WrapSeq(b.impl.Values())",    // renderSeq
+		"b.ctx.VM().ToValue(b.impl.Get(",    // renderScalar
+		"b.ctx.VM().ToValue(b.impl.Size())", // renderScalar, no args
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("maplike routing missing %q\n%s", want, src)
@@ -731,13 +731,13 @@ func TestBinding_AsyncIterable_Skipped(t *testing.T) {
 	}
 }
 
-// A setter with fewer than 2 args falls back to coerce[any] for the value.
+// A setter with fewer than 2 args falls back to rt.Coerce[any] for the value.
 func TestBinding_IndexedSetter_OneArg_DefaultsAny(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("Arr", "",
 		specialOp("setter", idlType("undefined"), arg("index", "unsigned long")))
 	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
-	if !strings.Contains(src, "b.impl.SetIndex(i, coerce[any](") {
+	if !strings.Contains(src, "b.impl.SetIndex(i, rt.Coerce[any](") {
 		t.Errorf("1-arg indexed setter must default the value coercion to any\n%s", src)
 	}
 }

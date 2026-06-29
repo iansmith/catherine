@@ -5,8 +5,10 @@ import (
 	"strings"
 )
 
-// renderImports is the implementation backing ImportTracker.Render.
-func renderImports(paths map[string]struct{}) string {
+// renderImports is the implementation backing ImportTracker.Render. aliases maps
+// a path to an explicit import alias (e.g. "rt"); paths absent from it import
+// under their natural package name.
+func renderImports(paths map[string]struct{}, aliases map[string]string) string {
 	if len(paths) == 0 {
 		return ""
 	}
@@ -27,18 +29,24 @@ func renderImports(paths map[string]struct{}) string {
 
 	var sb strings.Builder
 	sb.WriteString("import (\n")
-	for _, p := range stdlib {
-		sb.WriteString("\t\"")
+	emit := func(p string) {
+		sb.WriteString("\t")
+		if a := aliases[p]; a != "" {
+			sb.WriteString(a)
+			sb.WriteString(" ")
+		}
+		sb.WriteString("\"")
 		sb.WriteString(p)
 		sb.WriteString("\"\n")
+	}
+	for _, p := range stdlib {
+		emit(p)
 	}
 	if len(stdlib) > 0 && len(external) > 0 {
 		sb.WriteString("\n")
 	}
 	for _, p := range external {
-		sb.WriteString("\t\"")
-		sb.WriteString(p)
-		sb.WriteString("\"\n")
+		emit(p)
 	}
 	sb.WriteString(")\n")
 	return sb.String()

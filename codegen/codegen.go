@@ -68,12 +68,13 @@ func (d *Diagnostics) Format() string {
 // block. Stdlib imports appear before external imports; duplicates are
 // deduplicated automatically.
 type ImportTracker struct {
-	paths map[string]struct{}
+	paths   map[string]struct{}
+	aliases map[string]string // path → import alias (e.g. "rt")
 }
 
 // NewImportTracker returns an empty ImportTracker.
 func NewImportTracker() *ImportTracker {
-	return &ImportTracker{paths: make(map[string]struct{})}
+	return &ImportTracker{paths: make(map[string]struct{}), aliases: make(map[string]string)}
 }
 
 // Add registers an import path. Calling Add with the same path more than once
@@ -82,11 +83,18 @@ func (t *ImportTracker) Add(path string) {
 	t.paths[path] = struct{}{}
 }
 
+// AddAlias registers an import path under an explicit alias (e.g.
+// AddAlias("rt", "github.com/iansmith/webidl/jsbinding") → `rt "…/jsbinding"`).
+func (t *ImportTracker) AddAlias(alias, path string) {
+	t.paths[path] = struct{}{}
+	t.aliases[path] = alias
+}
+
 // Render returns a formatted import block, or "" if no imports have been
 // registered.
 func (t *ImportTracker) Render() string {
 	// Implemented in imports.go
-	return renderImports(t.paths)
+	return renderImports(t.paths, t.aliases)
 }
 
 // Decl is implemented by all declaration node types (ConstGroup, TypeAlias,

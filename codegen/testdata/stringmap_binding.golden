@@ -5,48 +5,48 @@ import (
 )
 
 type StringMapBinding struct {
-	ctx  *bindCtx
+	ctx  *rt.Ctx
 	impl StringMap
 }
 
 func (b *StringMapBinding) Get(key string) goja.Value {
 	switch key {
 	case "get":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.vm.ToValue(b.impl.Get(coerce[string](b.ctx, call.Argument(0))))
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.VM().ToValue(b.impl.Get(rt.Coerce[string](b.ctx, call.Argument(0))))
 		})
 	case "has":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.vm.ToValue(b.impl.Has(coerce[string](b.ctx, call.Argument(0))))
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.VM().ToValue(b.impl.Has(rt.Coerce[string](b.ctx, call.Argument(0))))
 		})
 	case "keys":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.wrapSeq(b.impl.Keys())
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.WrapSeq(b.impl.Keys())
 		})
 	case "values":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.wrapSeq(b.impl.Values())
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.WrapSeq(b.impl.Values())
 		})
 	case "entries":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.wrapSeq(b.impl.Entries())
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.WrapSeq(b.impl.Entries())
 		})
 	case "size":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.vm.ToValue(b.impl.Size())
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.VM().ToValue(b.impl.Size())
 		})
 	case "set":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			b.impl.Set(coerce[string](b.ctx, call.Argument(0)), coerce[string](b.ctx, call.Argument(1)))
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			b.impl.Set(rt.Coerce[string](b.ctx, call.Argument(0)), rt.Coerce[string](b.ctx, call.Argument(1)))
 			return goja.Undefined()
 		})
 	case "delete":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			b.impl.Delete(coerce[string](b.ctx, call.Argument(0)))
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			b.impl.Delete(rt.Coerce[string](b.ctx, call.Argument(0)))
 			return goja.Undefined()
 		})
 	case "clear":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
 			b.impl.Clear()
 			return goja.Undefined()
 		})

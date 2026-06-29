@@ -5,7 +5,7 @@ import (
 )
 
 type ElementBinding struct {
-	ctx    *bindCtx
+	ctx    *rt.Ctx
 	impl   Element
 	parent *NodeBinding
 }
@@ -13,12 +13,12 @@ type ElementBinding struct {
 func (b *ElementBinding) Get(key string) goja.Value {
 	switch key {
 	case "id":
-		return b.ctx.vm.ToValue(b.impl.IdAttr())
+		return b.ctx.VM().ToValue(b.impl.IdAttr())
 	case "className":
-		return b.ctx.vm.ToValue(b.impl.ClassNameAttr())
+		return b.ctx.VM().ToValue(b.impl.ClassNameAttr())
 	case "getAttribute":
-		return b.ctx.vm.ToValue(func(call goja.FunctionCall) goja.Value {
-			return b.ctx.vm.ToValue(b.impl.GetAttribute(coerce[string](b.ctx, call.Argument(0))))
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			return b.ctx.VM().ToValue(b.impl.GetAttribute(rt.Coerce[string](b.ctx, call.Argument(0))))
 		})
 	}
 	return b.parent.Get(key)
@@ -27,7 +27,7 @@ func (b *ElementBinding) Get(key string) goja.Value {
 func (b *ElementBinding) Set(key string, val goja.Value) bool {
 	switch key {
 	case "className":
-		b.impl.SetClassNameAttr(coerce[string](b.ctx, val))
+		b.impl.SetClassNameAttr(rt.Coerce[string](b.ctx, val))
 		return true
 	}
 	return b.parent.Set(key, val)
