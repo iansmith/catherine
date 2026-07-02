@@ -35,6 +35,24 @@ func (b *StringMapBinding) Get(key string) goja.Value {
 		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
 			return b.ctx.VM().ToValue(b.impl.Size())
 		})
+	case "forEach":
+		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
+			_cb := b.ctx.Callback(call.Argument(0))
+			if _cb == nil {
+				rt.ThrowType(b.ctx.VM(), "forEach argument 1 is not a function")
+				return goja.Undefined()
+			}
+			b.impl.ForEach(func(_v string, _k string) {
+				if _, _err := _cb(call.Argument(1), b.ctx.VM().ToValue(_v), b.ctx.VM().ToValue(_k), call.This); _err != nil {
+					if _ex, _ok := _err.(*goja.Exception); _ok {
+						panic(_ex)
+					} else {
+						panic(_err)
+					}
+				}
+			})
+			return goja.Undefined()
+		})
 	case "set":
 		return b.ctx.VM().ToValue(func(call goja.FunctionCall) goja.Value {
 			b.impl.Set(rt.Coerce[string](b.ctx, call.Argument(0)), rt.Coerce[string](b.ctx, call.Argument(1)))
@@ -65,6 +83,7 @@ func (b *StringMapBinding) Has(key string) bool {
 		key == "values" ||
 		key == "entries" ||
 		key == "size" ||
+		key == "forEach" ||
 		key == "set" ||
 		key == "delete" ||
 		key == "clear"
@@ -75,5 +94,5 @@ func (b *StringMapBinding) Delete(key string) bool {
 }
 
 func (b *StringMapBinding) Keys() []string {
-	return []string{"get", "has", "keys", "values", "entries", "size", "set", "delete", "clear"}
+	return []string{"get", "has", "keys", "values", "entries", "size", "forEach", "set", "delete", "clear"}
 }

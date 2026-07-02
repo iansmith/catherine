@@ -201,6 +201,11 @@ interface Element : Node {
   constructor(DOMString localName);
   iterable<Node>;
 };
+
+[Exposed=Window]
+interface StringNodeMap {
+  maplike<DOMString, Node>;
+};
 `
 
 func TestCATH66_GeneratedCompiles(t *testing.T) {
