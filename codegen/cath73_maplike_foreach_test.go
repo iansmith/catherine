@@ -45,16 +45,55 @@ func TestCATH73_Maplike_ForEach_BindingTypedAdapter(t *testing.T) {
 	}
 }
 
-// TestCATH73_Maplike_ForEach_Layer1Method asserts the shared resolveIterMethods
-// change also surfaces a ForEach method on the layer-1 interface (anti-drift:
-// the binding's b.impl.ForEach(...) call only compiles if layer-1 declares it).
-func TestCATH73_Maplike_ForEach_Layer1Method(t *testing.T) {
+// TestCATH73_Maplike_ForEach_CallbackArgOrder_ValueBeforeKey pins the WebIDL
+// §3.6.9 invocation shape: the callback is called `callback(value, key, map)`.
+// For DOMString→string key, Node→any value the ordered fragment is
+// `b.ctx.WrapAny(_v), b.ctx.VM().ToValue(_k), call.This`. This is the one
+// assertion that distinguishes a correct value-first emission from a key-first
+// one AND proves the wraps live inside the adapter (not merely somewhere in the
+// file, where get/has/entries also emit them) AND that the map (call.This) is
+// passed as the third callback arg.
+func TestCATH73_Maplike_ForEach_CallbackArgOrder_ValueBeforeKey(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("StringNodeMap", "", maplike("DOMString", "Node", false))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// value (WrapAny) before key (ToValue), then the map as call.This — all in
+	// one ordered invocation.
+	const want = "b.ctx.WrapAny(_v), b.ctx.VM().ToValue(_k), call.This"
+	if !strings.Contains(src, want) {
+		t.Errorf("maplike forEach must invoke callback(value, key, map) — expected ordered fragment %q\n%s", want, src)
+	}
+}
+
+// TestCATH73_Maplike_Layer1_ForEach_HasTypedFnParam asserts the layer-1
+// interface declares ForEach with the value-before-key typed func param, not
+// just some `ForEach(` substring. Anti-drift: the binding closure func(any,
+// string) only compiles against a matching layer-1 signature.
+func TestCATH73_Maplike_Layer1_ForEach_HasTypedFnParam(t *testing.T) {
 	t.Parallel()
 	def := regularMergedDef("StringNodeMap", "", maplike("DOMString", "Node", false))
 	src := sourceOf(t, firstDecl(t, codegen.NewInterfaceDecls(def, tm, codegen.NewDiagnostics())), "iter")
 
-	if !strings.Contains(src, "ForEach(") {
-		t.Errorf("layer-1 maplike interface must declare a ForEach method\n%s", src)
+	const want = "ForEach(Fn func(any, string))"
+	if !strings.Contains(src, want) {
+		t.Errorf("layer-1 maplike must declare %q (value-before-key typed param)\n%s", want, src)
+	}
+}
+
+// TestCATH73_Maplike_ForEach_PrimitiveValue_UsesToValue flips the wrap branch:
+// maplike<Node, long> has a primitive value and an object key, so the adapter
+// must wrap the value via VM().ToValue and the key via WrapAny — proving the
+// per-arg wrap is selected by type, not hardcoded to WrapAny for the value slot.
+func TestCATH73_Maplike_ForEach_PrimitiveValue_UsesToValue(t *testing.T) {
+	t.Parallel()
+	def := regularMergedDef("NodeLongMap", "", maplike("Node", "long", false))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// value (long→ToValue) before key (Node→WrapAny), then the map.
+	const want = "b.ctx.VM().ToValue(_v), b.ctx.WrapAny(_k), call.This"
+	if !strings.Contains(src, want) {
+		t.Errorf("maplike<Node,long> forEach must wrap primitive value via ToValue and object key via WrapAny — expected %q\n%s", want, src)
 	}
 }
 
