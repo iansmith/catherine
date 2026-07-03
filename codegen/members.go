@@ -145,6 +145,9 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
 			{jsName: "entries", goName: "Entries", returnType: iterSeq2(keyType, valType), render: renderSeq},
 			{jsName: "size", goName: "Size", returnType: "int", render: renderScalar},
+			// forEach is a reader (present regardless of readonly). WebIDL §3.6.9:
+			// callback(value, key, map) — value-first, matching IterIterable.
+			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + keyType + ")"}}, render: renderForEach, cbArgs: []ifaceParam{{goName: "_v", goType: valType}, {goName: "_k", goType: keyType}}},
 		}
 		if !it.Readonly {
 			out = append(out,
