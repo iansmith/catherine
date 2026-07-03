@@ -206,6 +206,11 @@ interface Element : Node {
 interface StringNodeMap {
   maplike<DOMString, Node>;
 };
+
+[Exposed=Window]
+interface NodeSet {
+  setlike<Node>;
+};
 `
 
 func TestCATH66_GeneratedCompiles(t *testing.T) {
