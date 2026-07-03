@@ -169,6 +169,10 @@ func resolveIterMethods(it *webidl.IterableLike, tm typemap.Mapper, diag *Diagno
 			{jsName: "values", goName: "Values", returnType: iterSeq(valType), render: renderSeq},
 			{jsName: "entries", goName: "Entries", returnType: iterSeq2(valType, valType), render: renderSeq},
 			{jsName: "size", goName: "Size", returnType: "int", render: renderScalar},
+			// forEach is a reader (present regardless of readonly). WebIDL §3.6.10:
+			// callback(value, value, set) — a set has no key, so both slots are the
+			// value type.
+			{jsName: "forEach", goName: "ForEach", params: []ifaceParam{{goName: "Fn", goType: "func(" + valType + ", " + valType + ")"}}, render: renderForEach, cbArgs: []ifaceParam{{goName: "_v", goType: valType}, {goName: "_k", goType: valType}}},
 		}
 		if !it.Readonly {
 			out = append(out,
