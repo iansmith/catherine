@@ -1,8 +1,8 @@
 package codegen_test
 
-// CATH-77 Phase 0: red test — a true end-to-end harness that runs the REAL
+// CATH-77 Phase 0: red tests — a true end-to-end harness that runs the REAL
 // generator, compiles its output with a hand-written fake impl, executes a JS
-// program in goja against the generated bindings, and asserts the JS output.
+// program in goja against the generated bindings, and asserts the JS behavior.
 //
 // This closes the gap between TestCATH66_GeneratedCompiles (generate → go build,
 // never runs JS) and jsbinding's TestEndToEnd_* (runs JS, but against
@@ -24,16 +24,16 @@ interface StringMap {
 };
 `
 
-// cath77MaplikeRunner is a package-gen *_test.go dropped into the generated temp
-// module. It must be package gen to construct StringMapBinding (unexported
-// fields). It seeds a fake impl {a:1, b:2} (insertion-ordered so forEach is
-// deterministic), runs Set.prototype.forEach-style iteration from JS, and
-// asserts the value-first callback arg order end-to-end: the pushed string is
-// "<key>=<value>", so out == "a=1,b=2" proves v is the number and k the key.
-const cath77MaplikeRunner = `package gen
+// cath77RunnerPrefix is the shared head of every package-gen runner dropped into
+// the generated temp module: it must be package gen to construct
+// StringMapBinding (unexported fields). It defines a fake Env and a fake
+// StringMap impl backed by ordered slices (so ForEach iterates in insertion
+// order — a Go map would be random). Per-case test functions are appended.
+const cath77RunnerPrefix = `package gen
 
 import (
 	"iter"
+	"strings"
 	"testing"
 
 	"github.com/dop251/goja"
@@ -45,8 +45,6 @@ type e2eEnv struct{}
 func (e2eEnv) Root() any                   { return nil }
 func (e2eEnv) Construct(string, []any) any { return nil }
 
-// fakeStringMap implements the generated StringMap interface. Backed by ordered
-// slices so ForEach iterates in insertion order (a Go map would be random).
 type fakeStringMap struct {
 	keys []string
 	vals []int32
@@ -105,7 +103,8 @@ func (m *fakeStringMap) Set(k string, v int32) { m.keys = append(m.keys, k); m.v
 func (m *fakeStringMap) Delete(string)         {}
 func (m *fakeStringMap) Clear()                { m.keys, m.vals = nil, nil }
 
-func TestE2E(t *testing.T) {
+func seed(t *testing.T) (*goja.Runtime, *jsbinding.Ctx) {
+	t.Helper()
 	vm := goja.New()
 	ctx := jsbinding.NewCtx(vm, e2eEnv{})
 	impl := &fakeStringMap{}
@@ -113,7 +112,18 @@ func TestE2E(t *testing.T) {
 	impl.Set("b", 2)
 	m := ctx.Wrap(impl, func() goja.DynamicObject { return &StringMapBinding{ctx: ctx, impl: impl} })
 	vm.Set("m", m)
+	return vm, ctx
+}
 
+var _ = strings.Contains
+`
+
+// cath77ForEachHappyTest asserts value-first callback arg order end-to-end: the
+// pushed string is "<key>=<value>", so out == "a=1,b=2" proves v is the number
+// and k the key (a swapped binding would yield "1=a,2=b").
+const cath77ForEachHappyTest = `
+func TestE2E(t *testing.T) {
+	vm, _ := seed(t)
 	res, err := vm.RunString("var o=[]; m.forEach(function(v,k){o.push(k+'='+v)}); o.join(',')")
 	if err != nil {
 		t.Fatalf("RunString: %v", err)
@@ -124,20 +134,46 @@ func TestE2E(t *testing.T) {
 }
 `
 
+// cath77ForEachThrowTest exercises the generated forEach's *goja.Exception
+// re-panic path end-to-end: a throwing JS callback must surface as a RunString
+// error (not a swallowed throw, not a Go panic/crash).
+const cath77ForEachThrowTest = `
+func TestE2E(t *testing.T) {
+	vm, _ := seed(t)
+	_, err := vm.RunString("m.forEach(function(v,k){ throw new Error('boom '+k) })")
+	if err == nil {
+		t.Fatalf("a throwing forEach callback must surface as a RunString error, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom a") {
+		t.Fatalf("thrown error must propagate to JS caller; got %q, want it to contain \"boom a\"", err.Error())
+	}
+}
+`
+
 // TestCATH77_EndToEnd_MaplikeForEach_RunsJS is the headline: generate a real
-// maplike IDL, compile the output with the fake impl + runner above, run the JS
+// maplike IDL, compile the output with the fake impl + runner, run the JS
 // forEach program in goja, and assert it produces "a=1,b=2".
 func TestCATH77_EndToEnd_MaplikeForEach_RunsJS(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not found; skipping end-to-end run")
 	}
-	runGeneratedJS(t, cath77MaplikeIDL, cath77MaplikeRunner)
+	runGeneratedJS(t, cath77MaplikeIDL, cath77RunnerPrefix+cath77ForEachHappyTest)
+}
+
+// TestCATH77_EndToEnd_MaplikeForEach_ThrowPropagates asserts a thrown JS
+// exception from the callback propagates out through the generated adapter.
+func TestCATH77_EndToEnd_MaplikeForEach_ThrowPropagates(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not found; skipping end-to-end run")
+	}
+	runGeneratedJS(t, cath77MaplikeIDL, cath77RunnerPrefix+cath77ForEachThrowTest)
 }
 
 // runGeneratedJS is the reusable harness: given a WebIDL fixture and a package-gen
 // runner test source, it generates layer-1 + bindings into a temp module, drops
 // the runner in, and runs `go test` — failing t (with the captured output) if the
-// generated code doesn't compile or the JS assertion doesn't hold.
+// generated code doesn't compile, the runner test does not actually execute, or
+// the JS assertion doesn't hold.
 //
 // STUB — implemented in the CATH-77 implementation phase. Fails RED until then.
 func runGeneratedJS(t *testing.T, idl, runnerSrc string) {
