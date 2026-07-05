@@ -11,8 +11,13 @@ package codegen_test
 // RED until runGeneratedJS is implemented: the helper is a stub that fails.
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/iansmith/webidl/codegen"
 )
 
 // cath77MaplikeIDL is the seed fixture: a bare maplike interface (no
@@ -175,8 +180,55 @@ func TestCATH77_EndToEnd_MaplikeForEach_ThrowPropagates(t *testing.T) {
 // generated code doesn't compile, the runner test does not actually execute, or
 // the JS assertion doesn't hold.
 //
-// STUB — implemented in the CATH-77 implementation phase. Fails RED until then.
 func runGeneratedJS(t *testing.T, idl, runnerSrc string) {
 	t.Helper()
-	t.Fatal("runGeneratedJS not implemented (CATH-77 Phase 0 red)")
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not found; skipping end-to-end run")
+	}
+
+	dir := t.TempDir()
+	ir := mustIR(t, idl)
+	if err := codegen.Generate(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("Generate (layer-1): %v", err)
+	}
+	if err := codegen.GenerateBindings(ir, codegen.Options{OutputDir: dir, PackageName: "gen"}); err != nil {
+		t.Fatalf("GenerateBindings: %v", err)
+	}
+
+	// go.mod / go.sum / offline env — same shape as TestCATH66_GeneratedCompiles:
+	// replace the webidl module with the local checkout and resolve goja (+ deps)
+	// from the module cache offline (they are cached because catherine requires goja).
+	cathRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	gomod := "module gentest\n\ngo 1.26\n\nrequire (\n" +
+		"\tgithub.com/iansmith/webidl v0.0.0\n" +
+		"\tgithub.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3\n)\n\n" +
+		"replace github.com/iansmith/webidl => " + cathRoot + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if sum, err := os.ReadFile(filepath.Join(cathRoot, "go.sum")); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644)
+	}
+
+	// The runner is package gen (reaches the binding's unexported fields) and runs
+	// under `go test`.
+	if err := os.WriteFile(filepath.Join(dir, "zz_e2e_test.go"), []byte(runnerSrc), 0o644); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+
+	cmd := exec.Command(goBin, "test", "-run", "TestE2E", "-v", "-count=1", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	out, runErr := cmd.CombinedOutput()
+
+	// Integrity: `go test` exits 0 even when -run matches nothing ("no tests to
+	// run"), so a passing exit code is NOT sufficient — require the runner test to
+	// have actually executed and passed.
+	if runErr != nil || !strings.Contains(string(out), "--- PASS: TestE2E") {
+		t.Fatalf("end-to-end run did not pass (exit: %v):\n%s", runErr, out)
+	}
 }
