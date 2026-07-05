@@ -227,8 +227,10 @@ func runGeneratedJS(t *testing.T, idl, runnerSrc string) {
 
 	// Integrity: `go test` exits 0 even when -run matches nothing ("no tests to
 	// run"), so a passing exit code is NOT sufficient — require the runner test to
-	// have actually executed and passed.
-	if runErr != nil || !strings.Contains(string(out), "--- PASS: TestE2E") {
+	// have actually executed and passed. Anchor on the trailing " (" of the `go
+	// test -v` pass line ("--- PASS: TestE2E (0.00s)") so a differently-named
+	// sibling test (e.g. TestE2Extra) can't satisfy the guard by prefix match.
+	if runErr != nil || !strings.Contains(string(out), "--- PASS: TestE2E (") {
 		t.Fatalf("end-to-end run did not pass (exit: %v):\n%s", runErr, out)
 	}
 }
