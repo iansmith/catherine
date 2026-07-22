@@ -95,6 +95,44 @@ func TestCoerce_Primitives(t *testing.T) {
 	}
 }
 
+// TestCoerceArgs spreads trailing call arguments into a typed slice, honoring
+// the `from` offset and returning nil past the end.
+func TestCoerceArgs(t *testing.T) {
+	ctx := newCtx()
+	vm := ctx.VM()
+	call := goja.FunctionCall{Arguments: []goja.Value{vm.ToValue("a"), vm.ToValue("b"), vm.ToValue("c")}}
+
+	if got := jsbinding.CoerceArgs[string](ctx, call, 0); len(got) != 3 || got[0] != "a" || got[2] != "c" {
+		t.Errorf("CoerceArgs from 0 = %v, want [a b c]", got)
+	}
+	if got := jsbinding.CoerceArgs[string](ctx, call, 1); len(got) != 2 || got[0] != "b" || got[1] != "c" {
+		t.Errorf("CoerceArgs from 1 = %v, want [b c]", got)
+	}
+	if got := jsbinding.CoerceArgs[string](ctx, call, 3); got != nil {
+		t.Errorf("CoerceArgs past end = %v, want nil", got)
+	}
+	if got := jsbinding.CoerceArgs[string](ctx, goja.FunctionCall{}, 0); got != nil {
+		t.Errorf("CoerceArgs on empty call = %v, want nil", got)
+	}
+}
+
+// TestUnwrapArgs spreads trailing object args back to their impls.
+func TestUnwrapArgs(t *testing.T) {
+	ctx := newCtx()
+	a, b := &fakeNode{tag: "a"}, &fakeNode{tag: "b"}
+	va := ctx.Wrap(a, func() goja.DynamicObject { return &elemBinding{ctx: ctx, impl: a} })
+	vb := ctx.Wrap(b, func() goja.DynamicObject { return &elemBinding{ctx: ctx, impl: b} })
+	call := goja.FunctionCall{Arguments: []goja.Value{va, vb}}
+
+	got := ctx.UnwrapArgs(call, 0)
+	if len(got) != 2 || got[0] != any(a) || got[1] != any(b) {
+		t.Errorf("UnwrapArgs = %v, want [a b] impls", got)
+	}
+	if got := ctx.UnwrapArgs(call, 2); got != nil {
+		t.Errorf("UnwrapArgs past end = %v, want nil", got)
+	}
+}
+
 // --- overload arg-kind classification ---------------------------------------
 
 func TestArgKind(t *testing.T) {
