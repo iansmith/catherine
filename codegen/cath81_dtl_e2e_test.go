@@ -199,3 +199,19 @@ func TestCATH81_VariadicOp_SpreadsAllArgs(t *testing.T) {
 		t.Errorf("variadic add must spread all JS args into the Go variadic (expected a `...)` spread):\n%s", src)
 	}
 }
+
+// TestCATH81_VariadicObjectOp_UnwrapsArgs covers the object-typed variadic
+// branch: an interface-typed variadic element must spread via UnwrapArgs (the
+// object path), mirroring coerceArg's classObject split. (DOMTokenList only has
+// string variadics, so this guards the other branch directly.)
+func TestCATH81_VariadicObjectOp_UnwrapsArgs(t *testing.T) {
+	t.Parallel()
+	nodes := arg("nodes", "Node") // unknown interface → object-typed element
+	nodes.Variadic = true
+	def := regularMergedDef("Observer", "", op("observe", idlType("undefined"), nodes))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	if !strings.Contains(src, "b.ctx.UnwrapArgs(call, 0)...") {
+		t.Errorf("object-typed variadic must spread via UnwrapArgs:\n%s", src)
+	}
+}

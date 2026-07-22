@@ -143,6 +143,36 @@ func Coerce[T any](c *Ctx, v goja.Value) T {
 	return out
 }
 
+// CoerceArgs coerces the trailing JS call arguments (from index `from` onward)
+// into a []T, one Coerce[T] per argument. Used to spread a variadic WebIDL
+// operation's arguments into a Go variadic parameter. Returns nil when there
+// are no arguments at or after `from`.
+func CoerceArgs[T any](c *Ctx, call goja.FunctionCall, from int) []T {
+	if from >= len(call.Arguments) {
+		return nil
+	}
+	out := make([]T, 0, len(call.Arguments)-from)
+	for _, a := range call.Arguments[from:] {
+		out = append(out, Coerce[T](c, a))
+	}
+	return out
+}
+
+// UnwrapArgs is the object-typed counterpart of CoerceArgs: it Unwraps each
+// trailing JS call argument (from index `from` onward) to its impl, for a
+// variadic operation whose element type is an interface. Returns nil when there
+// are no arguments at or after `from`.
+func (c *Ctx) UnwrapArgs(call goja.FunctionCall, from int) []any {
+	if from >= len(call.Arguments) {
+		return nil
+	}
+	out := make([]any, 0, len(call.Arguments)-from)
+	for _, a := range call.Arguments[from:] {
+		out = append(out, c.Unwrap(a))
+	}
+	return out
+}
+
 // AsArrayIndex reports whether key is a canonical array index ("0", "42", … but
 // not "01", "-1", "", or an overflow).
 func AsArrayIndex(key string) (uint32, bool) {

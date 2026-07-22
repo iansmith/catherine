@@ -32,8 +32,9 @@ import (
 //
 // The generated bodies call into the hand-written runtime shim — the jsbinding
 // package (CATH-66), imported under the alias `rt` (configurable via
-// Options.RuntimeImportPath). That package defines Ctx, Coerce[T], AsArrayIndex,
-// (Ctx) Wrap/Unwrap/WrapSeq/Callback/SameObject/ArgKind/ReflectGet|Set*, the Kind
+// Options.RuntimeImportPath). That package defines Ctx, Coerce[T], CoerceArgs[T],
+// AsArrayIndex, (Ctx) Wrap/Unwrap/UnwrapArgs/WrapSeq/Callback/SameObject/ArgKind/
+// ReflectGet|Set*, the Kind
 // enum, ExposedBinding, ThrowType, and the Env/AttrStore interfaces the engine
 // supplies. goja is a real dependency (the shim compiles against it); the
 // generated bindings + the manifest's Register entrypoint compile against both.
@@ -350,6 +351,17 @@ func (b *bindingBuilder) addOperation(op *webidl.Operation) {
 	marker := noopMarker(ParseExtAttrs(op.ExtAttrs, b.diag))
 	args := make([]string, 0, len(op.Arguments))
 	for i, a := range op.Arguments {
+		if a.Variadic {
+			// Spread ALL trailing JS args into the Go variadic (a variadic param
+			// is always last in WebIDL). Object elems Unwrap; everything else
+			// Coerce — mirroring coerceArg's split.
+			if classifyArg(a.IDLType, b.tm) == classObject {
+				args = append(args, fmt.Sprintf("b.ctx.UnwrapArgs(call, %d)...", i))
+			} else {
+				args = append(args, fmt.Sprintf("rt.CoerceArgs[%s](b.ctx, call, %d)...", b.goType(a.IDLType), i))
+			}
+			continue
+		}
 		args = append(args, b.coerceArg(a.IDLType, fmt.Sprintf("call.Argument(%d)", i)))
 	}
 	call := fmt.Sprintf("b.impl.%s(%s)", goName, strings.Join(args, ", "))
