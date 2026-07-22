@@ -86,3 +86,35 @@ func TestCodegenCLI_Bindings_RuntimeImportPath(t *testing.T) {
 		t.Fatalf("-rt %q not threaded into bindings.go runtime import:\n%s", rtPath, b)
 	}
 }
+
+// TestCodegenCLI_Bindings_ExposedFilters asserts `-exposed` threads to
+// Options.ExposureGlobal: a Window-only interface built with -exposed Worker is
+// not exposed, so no ThingBinding is emitted.
+func TestCodegenCLI_Bindings_ExposedFilters(t *testing.T) {
+	dir, idl := writeIDL(t, cath79ThingIDL)
+	out, err := runCLI(t, "codegen", "-bindings", "-exposed", "Worker", "-pkg", "gen", "-o", dir, idl)
+	if err != nil {
+		t.Fatalf("CLI codegen -bindings -exposed failed: %v\n%s", err, out)
+	}
+	// bindings.go may or may not be written when nothing is exposed; either way
+	// it must NOT contain a binding for the Window-only Thing.
+	if b, rerr := os.ReadFile(filepath.Join(dir, "bindings.go")); rerr == nil {
+		if strings.Contains(string(b), "ThingBinding") {
+			t.Fatalf("-exposed Worker must exclude the Window-only Thing, but ThingBinding was emitted:\n%s", b)
+		}
+	}
+}
+
+// TestCodegenCLI_ExposedWithoutBindings_WarnsNotErrors asserts the binding-only
+// flags are tolerated (warn, don't error) when -bindings is absent: layer-1 is
+// still generated and the CLI exits 0.
+func TestCodegenCLI_ExposedWithoutBindings_WarnsNotErrors(t *testing.T) {
+	dir, idl := writeIDL(t, cath79ThingIDL)
+	out, err := runCLI(t, "codegen", "-exposed", "Worker", "-pkg", "gen", "-o", dir, idl)
+	if err != nil {
+		t.Fatalf("-exposed without -bindings must warn, not error: %v\n%s", err, out)
+	}
+	if _, rerr := os.ReadFile(filepath.Join(dir, "generated.go")); rerr != nil {
+		t.Fatalf("layer-1 generated.go must still be written: %v\noutput:\n%s", rerr, out)
+	}
+}
