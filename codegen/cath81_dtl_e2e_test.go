@@ -11,7 +11,12 @@ package codegen_test
 // toString) already works — the assertion below is red solely on the variadic
 // arg-drop.
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/iansmith/webidl/codegen"
+)
 
 const cath81DTLIDL = `
 [Exposed=Window]
@@ -172,4 +177,25 @@ func TestE2E(t *testing.T) {
 // composite output. Red until variadic arg-spreading is fixed.
 func TestCATH81_EndToEnd_DOMTokenList_RunsJS(t *testing.T) {
 	runGeneratedJS(t, cath81DTLIDL, cath81DTLRunner)
+}
+
+// TestCATH81_VariadicOp_SpreadsAllArgs is a source-level guard that runs even
+// without a Go toolchain (the E2E test above skips there). It asserts the
+// generated binding for a variadic operation spreads ALL JS arguments into the
+// Go variadic, rather than forwarding only call.Argument(0).
+func TestCATH81_VariadicOp_SpreadsAllArgs(t *testing.T) {
+	t.Parallel()
+	tokens := arg("tokens", "DOMString")
+	tokens.Variadic = true
+	def := regularMergedDef("Toks", "", op("add", idlType("undefined"), tokens))
+	src := sourceOf(t, firstDecl(t, codegen.NewBindingDecls(def, tm, codegen.NewDiagnostics())), gojaPkg)
+
+	// The bug: only the first arg is forwarded.
+	if strings.Contains(src, "b.impl.Add(rt.Coerce[string](b.ctx, call.Argument(0)))") {
+		t.Errorf("variadic add must not forward only call.Argument(0):\n%s", src)
+	}
+	// The fix: a Go variadic spread (…) into the call.
+	if !strings.Contains(src, "...)") {
+		t.Errorf("variadic add must spread all JS args into the Go variadic (expected a `...)` spread):\n%s", src)
+	}
 }
