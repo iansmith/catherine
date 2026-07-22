@@ -326,8 +326,11 @@ func runCodegen(args []string) {
 	fs := flag.NewFlagSet("codegen", flag.ExitOnError)
 	outDir := fs.String("o", ".", "output directory for generated .go files")
 	pkgName := fs.String("pkg", "", "Go package name for generated files (required)")
+	bindings := fs.Bool("bindings", false, "also emit the goja bindings (bindings.go)")
+	exposed := fs.String("exposed", "", "binding exposure global (default Window; -bindings only)")
+	rtPath := fs.String("rt", "", "runtime shim import path (default in-repo jsbinding; -bindings only)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: webidl codegen -pkg name [-o dir] file.idl ...")
+		fmt.Fprintln(os.Stderr, "usage: webidl codegen -pkg name [-o dir] [-bindings [-exposed global] [-rt import/path]] file.idl ...")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -374,5 +377,19 @@ func runCodegen(args []string) {
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "codegen:", err)
 		os.Exit(1)
+	}
+
+	if *bindings {
+		if err := codegen.GenerateBindings(ir, codegen.Options{
+			OutputDir:         *outDir,
+			PackageName:       *pkgName,
+			ExposureGlobal:    *exposed, // "" → codegen defaults to Window
+			RuntimeImportPath: *rtPath,  // "" → codegen defaults to the in-repo jsbinding
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "codegen bindings:", err)
+			os.Exit(1)
+		}
+	} else if *exposed != "" || *rtPath != "" {
+		fmt.Fprintln(os.Stderr, "warning: -exposed/-rt ignored without -bindings")
 	}
 }

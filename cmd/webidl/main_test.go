@@ -48,6 +48,22 @@ func writeIDL(t *testing.T, idl string) (string, string) {
 	return dir, p
 }
 
+// TestCodegenCLI_Default_NoBindings is a regression guard: without -bindings the
+// CLI still writes only layer-1 generated.go — no bindings.go, no behavior change.
+func TestCodegenCLI_Default_NoBindings(t *testing.T) {
+	dir, idl := writeIDL(t, cath79ThingIDL)
+	out, err := runCLI(t, "codegen", "-pkg", "gen", "-o", dir, idl)
+	if err != nil {
+		t.Fatalf("CLI codegen (default) failed: %v\n%s", err, out)
+	}
+	if _, rerr := os.ReadFile(filepath.Join(dir, "generated.go")); rerr != nil {
+		t.Fatalf("layer-1 generated.go must be written: %v", rerr)
+	}
+	if _, rerr := os.ReadFile(filepath.Join(dir, "bindings.go")); rerr == nil {
+		t.Fatalf("default (no -bindings) must NOT write bindings.go")
+	}
+}
+
 // TestCodegenCLI_Bindings_EmitsBindingsFile asserts `-bindings` makes the CLI
 // also emit bindings.go with a generated *Binding type and a Register entrypoint.
 func TestCodegenCLI_Bindings_EmitsBindingsFile(t *testing.T) {
