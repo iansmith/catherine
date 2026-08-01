@@ -17,3 +17,26 @@ fix     = false    # true: commit fixable findings after code-review completes
 
 [workflow]
 skip_confirm = true
+
+[tiers.huge]  # set 2026-08-01 (grand synchronization)
+provider = "anthropic"
+model    = "opus"
+version  = "5"
+
+[tiers.large]  # set 2026-08-01 (grand synchronization)
+provider = "anthropic"
+model    = "opus"
+version  = "5"
+
+[tiers.medium]  # set 2026-08-01 (grand synchronization)
+provider = "anthropic"
+model    = "sonnet"
+version  = "5"
+
+[tiers.small]  # set 2026-08-01 (grand synchronization)
+provider = "anthropic"
+model    = "sonnet"
+version  = "5"
+
+[autonomous]  # set 2026-08-01 (grand synchronization)
+enabled = true
