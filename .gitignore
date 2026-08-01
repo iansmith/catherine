@@ -16,3 +16,6 @@
 
 # Claude Code agent worktrees (created by parallel agent isolation)
 .claude/
+
+# slopstop ticket tracking (per-ticket working notes, not source)
+.slopstop/

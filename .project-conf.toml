@@ -2,6 +2,13 @@ system = "github"
 key    = "iansmith/catherine"
 prefix = "CATH"
 
+# Project-local ticket tracking. The historical defaults live under ~/.claude, which is
+# a protected path: a headless fleet agent's Write tool refuses it even when the launch
+# passes a matching --add-dir. Relative paths resolve from the main worktree root, so
+# every agent worktree shares these two dirs. `.slopstop/` is gitignored.
+tracking_dir = ".slopstop/ticket-active"
+archive_dir  = ".slopstop/ticket-archive"
+
 [status_labels]
 in_progress = "status:in-progress"
 # 3-state workflow: no in_review label.
