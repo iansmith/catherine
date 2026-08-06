@@ -20,7 +20,7 @@ in_progress = "status:in-progress"
 [pr_review]
 backend = "claude"
 effort  = "high"   # low | medium | high | max | ultra
-fix     = false    # true: commit fixable findings after code-review completes
+# fix     = false    # true: commit fixable findings after code-review completes   # retired v4.0.0
 
 [workflow]
 skip_confirm = true
@@ -45,5 +45,5 @@ provider = "anthropic"
 model    = "sonnet"
 version  = "5"
 
-[autonomous]  # set 2026-08-01 (grand synchronization)
-enabled = true
+# [autonomous]  # set 2026-08-01 (grand synchronization)   # retired v4.0.0
+# enabled = true   # retired v4.0.0

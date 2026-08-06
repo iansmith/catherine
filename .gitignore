@@ -15,7 +15,14 @@
 *.swp
 
 # Claude Code agent worktrees (created by parallel agent isolation)
-.claude/
+.claude/settings.local.json
+.claude/worktrees/
 
 # slopstop ticket tracking (per-ticket working notes, not source)
 .slopstop/
+
+# slopstop run dirs (:design writes PRDs/charters here) and per-developer overrides.
+scratch/
+CLAUDE.local.md
+.project-conf-local.toml
+*.bak
