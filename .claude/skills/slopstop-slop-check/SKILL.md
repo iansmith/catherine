@@ -2,7 +2,7 @@
 description: Inspect a branch diff for AI slop — tests rewritten to pass, assertions inverted, vacuous or tautological tests, swallowed errors — and return each finding with its location, the signal that identified it, a severity, and one overall verdict. Reports only; never fixes.
 ---
 
-<!-- GENERATED from slopstop 5f0a942 by install-for-project.sh — do not edit.
+<!-- GENERATED from slopstop 096d061 by install-for-project.sh — do not edit.
      Edit skills/slop-check/ in the slopstop repo and re-run. (universal §5) -->
 
 # Slop check — the judgment pass over a diff
@@ -52,6 +52,38 @@ manufactures a green result. Read every untracked test file in full; they are in
 Read the repository's `CLAUDE.md`, any `CLAUDE-universal.md` it imports, and
 `.claude/rules/*.md`. They bind the code you are judging.
 
+Use graph tools for code discovery — `trace_path` to trace imports and fixtures into the
+diff, `search_graph` to find where helpers and fixtures are defined, and `get_code_snippet`
+to read their source. Fall back to grep only for non-code files or uncovered areas
+(`check_index_coverage`).
+
+**Example — tracing an import into the diff:**
+```
+search_graph(project: "<project>", query: "testHelper", label: "Function")
+→ finds where the helper is defined — is it in a test utility or production code?
+
+trace_path(project: "<project>", function_name: "testHelper", direction: "inbound", depth: 1)
+→ who calls it — verify the new test's fixture chain reaches production code
+
+get_code_snippet(project: "<project>", qualified_name: "<qn from above>")
+→ full source — check whether it stubs real behavior or manufactures a green result
+```
+
+**Example — verifying a test actually reaches production code:**
+```
+trace_path(project: "<project>", function_name: "CreateOrder", direction: "inbound", depth: 2, include_tests: true)
+→ callers including tests — verify the new test calls the real function, not a stub
+```
+
+**Graph vs. grep — when to use which:**
+- **Graph tools:** tracing imports and fixture chains, finding where helpers are defined,
+  reading function source to check for stubs, verifying test-to-production call paths.
+- **grep/Read:** config files, build output, non-code text, and files
+  `check_index_coverage` reports as not indexed.
+
+If you are about to write `grep -rn "FunctionName"` to trace a test's call chain, stop —
+that is a graph query. Use `trace_path` or `search_graph` instead.
+
 ## Step 2 — Tamper signals (🔴)
 
 These concern **existing** tests — ones that already asserted something before this branch.
@@ -80,9 +112,11 @@ These concern **existing** tests — ones that already asserted something before
   Tests written in the same commit as the code were never shown failing, so they are free to
   assert whatever the code already does — an unfalsifiable green suite. This is 🔴, not
   "nothing to check"; treating it as a pass makes skipping the baseline the cheapest way to
-  evade everything above. Two exemptions, both matched as **literal strings** — a paraphrase
-  is not the marker: a plan recording `**Phase 0:** none` for a prose-only change, and
-  `--refactor` (whose ticket carries `**Mode:** refactor`).
+  evade everything above. Two exemptions: a plan recording the **literal string**
+  `**Phase 0:** none` for a prose-only change — a paraphrase is not the marker — and being
+  launched with `--refactor`. Take `--refactor` from the flag; the ticket declares it with
+  the `slopstop-refactor` label, which the orchestrator resolves at intake, and it is not
+  yours to re-derive.
 
 Formatting is not tampering. Compare whitespace-blind and rename-aware; a `gofmt` or `black`
 run and a file rename must not read as a rewrite.
